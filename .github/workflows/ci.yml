@@ -41,17 +41,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO
 
-  web:
-    name: Bridge tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      # Matches the web repo's Node version, so the TypeScript that eventually moves into
-      # lib/native/ is exercised on the runtime it will actually live on.
-      - run: npm install
-      - run: npm test
+  # The bridge's TypeScript half used to live in web/ here and be tested by this job.
+  # It moved to lib/native/ in the myhumansapp repo (PR #254 there) — which was always the
+  # plan — and its tests run in that repo's CI now. One source of truth, not a mirror that
+  # drifts.

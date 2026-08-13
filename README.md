@@ -85,14 +85,19 @@ for this to be a separate repo while the web app ships independently.
 **Injected at document start**, before any page script runs:
 
 ```js
-window.__myhumansNative = { version: 1, caps: ['ink'] }
+window.__myhumansNative = { version: 2, caps: ['ink', 'ink-inline'] }
 ```
 
 **Web → native**, via `window.webkit.messageHandlers.myhumans.postMessage({ name, payload })`:
 
 | Message | Payload |
 |---|---|
-| `ink.open` | `{ noteId, drawing: base64 \| null, title, darkMode }` |
+| `ink.open` | `{ noteId, drawing: base64 \| null, title, darkMode, frame?, prefs? }` — with `frame` the canvas embeds in the page at that rect; without it, full screen (the v1 behaviour) |
+| `ink.frame` | `{ frame }` — the page laid out again; move the inline canvas |
+| `ink.prefs` | `{ twoFingerScroll?, lockZoom?, darkMode? }` — live settings changes |
+| `ink.undo` / `ink.redo` | `{}` — the page's own buttons |
+| `ink.finish` | `{}` — page is done with the canvas; shell flushes (`ink.close`) and tears down |
+| `ink.clearCanvas` | `{}` — page already deleted the note; blank the canvas, reply with nothing |
 
 **Native → web**, via `window.__myhumansNativeEmit(name, base64OfJSON)`:
 

@@ -43,6 +43,12 @@ enum Config {
     /// costs nothing and shortens the window in which a force-quit loses strokes.
     static let autosaveIdleSeconds: TimeInterval = 1.5
 
+    /// The writing page's width in content units, shared by the inline and fullscreen sizes of
+    /// the canvas so they are one piece of paper at two magnifications. If the two sizes each
+    /// used their own width, strokes written at the wide one would clip at the narrow one — data
+    /// intact, but handwriting the coach can no longer see reads as handwriting lost.
+    static let inkPageWidth: CGFloat = 1024
+
     /// Scale factor for the exported PNG, matching the web canvas's `pixelRatio: 2`.
     static let exportScale: CGFloat = 2
 

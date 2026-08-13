@@ -2,7 +2,7 @@ import PencilKit
 import UIKit
 
 protocol InkCanvasViewControllerDelegate: AnyObject {
-    /// `message` is `.inkAutosave` for a debounced tick, `.inkClose` for the Done flush.
+    /// `message` is `.inkAutosave` for a debounced tick, `.inkClose` for the flush.
     func inkCanvas(
         _ controller: InkCanvasViewController,
         didProduce result: Bridge.InkResult,
@@ -20,21 +20,39 @@ protocol InkCanvasViewControllerDelegate: AnyObject {
 /// cookie-authenticated same-origin request, and staying out of that path is what keeps this
 /// shell from needing a second copy of the app's auth.
 ///
-/// What it replaces on the web side is not small. `TldrawNoteCanvas.tsx` is 984 lines, and about
-/// 600 of them work around problems that do not exist here: the camera lock that stops a resting
-/// palm killing a stroke, the hand-rolled two-finger pan that lock made necessary, the coalesced
-/// -events mutation, `recoverStuckInteraction()`, the tool dock with its palm guard, and the
-/// two-finger double-tap eraser with nine hand-tuned thresholds that were never measured on a
-/// device. `PKCanvasView` is a `UIScrollView` and PencilKit owns the input pipeline, so scroll,
-/// palm rejection, pressure, tilt and the Pencil's own double-tap all come for free.
+/// Two presentations of the same canvas:
+///
+///   - `.modal` — full screen with a navigation bar. The v1 behaviour, kept for a web app that
+///     has never heard of inline.
+///   - `.inline` — embedded in the page at a rectangle the web side reports, beside the
+///     person's details. No bar of its own: undo, redo, clear and settings are page-rendered
+///     buttons that arrive over the bridge, so the chrome matches the app around it.
+///
+/// The drawing lives on a fixed-width page (`Config.inkPageWidth` content units) shown
+/// fit-to-width at whatever size the canvas currently is. That constant is what makes inline
+/// and fullscreen the same piece of paper at two magnifications, instead of two different-width
+/// pages that clip each other's strokes.
 final class InkCanvasViewController: UIViewController {
+
+    enum Mode { case modal, inline }
 
     weak var delegate: InkCanvasViewControllerDelegate?
 
+    let mode: Mode
     private let request: Bridge.OpenInkRequest
     private let canvasView = PKCanvasView()
     private var toolPicker: PKToolPicker?
     private var autosaveTimer: Timer?
+
+    // Preferences, applied at open and updatable live over the bridge.
+    private var twoFingerScroll = true
+    private var lockZoom = true
+    private var pageDark: Bool
+
+    /// The page's width in CONTENT units. At least `Config.inkPageWidth`; wider only when an
+    /// incoming drawing already has strokes beyond it, because clipping those visually — even
+    /// with the data safe — reads as lost handwriting.
+    private var pageWidth: CGFloat = Config.inkPageWidth
 
     /// Set when the incoming drawing could not be decoded, which DISABLES saving for the rest of
     /// the screen's life.
@@ -50,10 +68,16 @@ final class InkCanvasViewController: UIViewController {
 
     // MARK: - Init
 
-    init(request: Bridge.OpenInkRequest) {
+    init(request: Bridge.OpenInkRequest, mode: Mode) {
         self.request = request
+        self.mode = mode
+        self.pageDark = request.prefs?.darkMode ?? request.darkMode
         super.init(nibName: nil, bundle: nil)
-        modalPresentationStyle = .fullScreen
+        if mode == .modal { modalPresentationStyle = .fullScreen }
+        if let prefs = request.prefs {
+            twoFingerScroll = prefs.twoFingerScroll ?? twoFingerScroll
+            lockZoom = prefs.lockZoom ?? lockZoom
+        }
     }
 
     @available(*, unavailable)
@@ -63,11 +87,11 @@ final class InkCanvasViewController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        overrideUserInterfaceStyle = request.darkMode ? .dark : .light
+        overrideUserInterfaceStyle = pageDark ? .dark : .light
         view.backgroundColor = pageColor
 
         configureCanvas()
-        configureNavigationBar()
+        if mode == .modal { configureNavigationBar() }
         loadIncomingDrawing()
         observeBackgrounding()
     }
@@ -94,6 +118,7 @@ final class InkCanvasViewController: UIViewController {
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        applyZoomPolicy()
         growContentIfNeeded()
     }
 
@@ -102,7 +127,7 @@ final class InkCanvasViewController: UIViewController {
     private var pageColor: UIColor {
         // Matches the web canvas's Background component exactly, so a note written on the iPad
         // and one written in a browser sit side by side without one looking wrong.
-        request.darkMode ? UIColor(white: 0x1e / 255, alpha: 1) : .white
+        pageDark ? UIColor(white: 0x1e / 255, alpha: 1) : .white
     }
 
     private func configureCanvas() {
@@ -113,15 +138,14 @@ final class InkCanvasViewController: UIViewController {
 
         // Pencil only by default. Every documented failure in this feature's history is a palm
         // or a finger being mistaken for the pen, and this setting removes the entire class:
-        // fingers scroll, the Pencil writes, and neither can be confused for the other. The
-        // toolbar carries a toggle for anyone without a Pencil to hand.
+        // fingers scroll, the Pencil writes, and neither can be confused for the other.
         canvasView.drawingPolicy = .pencilOnly
 
         canvasView.alwaysBounceVertical = true
-        canvasView.minimumZoomScale = 1
-        canvasView.maximumZoomScale = 4
         canvasView.showsVerticalScrollIndicator = true
         canvasView.showsHorizontalScrollIndicator = false
+
+        applyScrollPolicy()
 
         view.addSubview(canvasView)
         NSLayoutConstraint.activate([
@@ -135,14 +159,16 @@ final class InkCanvasViewController: UIViewController {
     private func configureNavigationBar() {
         title = request.title
 
-        navigationItem.leftBarButtonItems = [
-            UIBarButtonItem(
-                title: "Done",
-                style: .done,
-                target: self,
-                action: #selector(handleDone)
-            ),
-        ]
+        // Not the word "Done": the coach is contracting the writing surface, not completing
+        // anything. The icon mirrors the expand control that opened it.
+        let close = UIBarButtonItem(
+            image: UIImage(systemName: "arrow.down.right.and.arrow.up.left"),
+            style: .done,
+            target: self,
+            action: #selector(handleDone)
+        )
+        close.accessibilityLabel = "Close the writing screen"
+        navigationItem.leftBarButtonItems = [close]
 
         let undo = UIBarButtonItem(
             image: UIImage(systemName: "arrow.uturn.backward"),
@@ -192,6 +218,12 @@ final class InkCanvasViewController: UIViewController {
             return
         }
         canvasView.drawing = drawing
+        // Notes written before the fixed page width existed used the device's width as their
+        // page. Widen rather than clip: the data would survive clipping, but handwriting the
+        // coach can no longer see reads as handwriting lost.
+        if !drawing.bounds.isNull {
+            pageWidth = max(pageWidth, drawing.bounds.maxX + 24)
+        }
     }
 
     private func presentLoadFailure() {
@@ -207,6 +239,41 @@ final class InkCanvasViewController: UIViewController {
             self.delegate?.inkCanvasDidFinish(self)
         })
         present(alert, animated: true)
+    }
+
+    // MARK: - Preferences
+
+    func apply(_ prefs: Bridge.InkPrefs) {
+        if let twoFinger = prefs.twoFingerScroll { twoFingerScroll = twoFinger }
+        if let lock = prefs.lockZoom { lockZoom = lock }
+        if let dark = prefs.darkMode, dark != pageDark {
+            pageDark = dark
+            overrideUserInterfaceStyle = dark ? .dark : .light
+            view.backgroundColor = pageColor
+            canvasView.backgroundColor = pageColor
+        }
+        applyScrollPolicy()
+        applyZoomPolicy()
+    }
+
+    /// Two-finger-only scrolling stops a resting finger moving the page — the same class of
+    /// accident `drawingPolicy = .pencilOnly` removes for drawing.
+    private func applyScrollPolicy() {
+        canvasView.panGestureRecognizer.minimumNumberOfTouches = twoFingerScroll ? 2 : 1
+    }
+
+    /// Fit-to-width is the resting state. With the zoom locked, it is the ONLY state — the pinch
+    /// gesture has nowhere to go, so the canvas cannot be accidentally resized mid-session.
+    private func applyZoomPolicy() {
+        let width = view.bounds.width
+        guard width > 0, pageWidth > 0 else { return }
+
+        let fit = width / pageWidth
+        canvasView.minimumZoomScale = fit
+        canvasView.maximumZoomScale = lockZoom ? fit : fit * 3
+        if lockZoom || canvasView.zoomScale < fit {
+            canvasView.zoomScale = fit
+        }
     }
 
     // MARK: - Crash recovery
@@ -252,6 +319,10 @@ final class InkCanvasViewController: UIViewController {
         alert.addAction(UIAlertAction(title: "Restore", style: .default) { [weak self] _ in
             guard let self else { return }
             self.canvasView.drawing = recovered
+            if !recovered.bounds.isNull {
+                self.pageWidth = max(self.pageWidth, recovered.bounds.maxX + 24)
+            }
+            self.applyZoomPolicy()
             self.growContentIfNeeded()
             // Straight onto the normal autosave path, so this stops being the only copy.
             self.scheduleAutosave()
@@ -262,7 +333,7 @@ final class InkCanvasViewController: UIViewController {
         present(alert, animated: true)
     }
 
-    /// Discarding is the one irreversible button on this alert: the copy being thrown away is, by
+    /// Discarding is the one irreversible button on that alert: the copy being thrown away is, by
     /// definition, the only one left. Everything else here can be undone by opening the note
     /// again, so this is the only place a second tap is worth asking for.
     private func confirmDiscardOfRecovery() {
@@ -286,21 +357,24 @@ final class InkCanvasViewController: UIViewController {
     // MARK: - Page length
 
     /// Grows the page as the writing approaches the bottom, so it behaves like a pad rather than
-    /// a fixed sheet. Never shrinks below what is already written.
+    /// a fixed sheet. Never shrinks below what is already written. All arithmetic is in CONTENT
+    /// units; `contentSize` is in view points, hence the multiplications by the zoom scale.
     private func growContentIfNeeded() {
-        let width = view.bounds.width
-        guard width > 0 else { return }
+        let zoom = canvasView.zoomScale
+        guard zoom > 0, view.bounds.width > 0 else { return }
 
-        let screenHeight = max(view.bounds.height, 1)
+        let visibleContentHeight = max(view.bounds.height / zoom, 1)
         let written = canvasView.drawing.bounds.isNull ? 0 : canvasView.drawing.bounds.maxY
-        let wanted = max(screenHeight * 2, written + screenHeight)
+        let wantedContentHeight = max(visibleContentHeight * 2, written + visibleContentHeight)
 
-        if abs(canvasView.contentSize.height - wanted) > 1 || canvasView.contentSize.width != width {
-            canvasView.contentSize = CGSize(width: width, height: wanted)
+        let wanted = CGSize(width: pageWidth * zoom, height: wantedContentHeight * zoom)
+        if abs(canvasView.contentSize.height - wanted.height) > 1
+            || abs(canvasView.contentSize.width - wanted.width) > 1 {
+            canvasView.contentSize = wanted
         }
     }
 
-    // MARK: - Actions
+    // MARK: - Actions (modal bar, and the bridge's inline equivalents)
 
     // Resolved through the canvas's responder chain, which is where PencilKit registers its
     // stroke undos. The view controller's own `undoManager` is a different object and would
@@ -308,6 +382,10 @@ final class InkCanvasViewController: UIViewController {
     @objc private func handleUndo() { canvasView.undoManager?.undo() }
 
     @objc private func handleRedo() { canvasView.undoManager?.redo() }
+
+    /// The page's undo/redo buttons, arriving over the bridge.
+    func undoFromWeb() { canvasView.undoManager?.undo() }
+    func redoFromWeb() { canvasView.undoManager?.redo() }
 
     @objc private func toggleFingerDrawing() {
         canvasView.drawingPolicy = canvasView.drawingPolicy == .pencilOnly ? .anyInput : .pencilOnly
@@ -331,6 +409,15 @@ final class InkCanvasViewController: UIViewController {
         present(alert, animated: true)
     }
 
+    /// The page already deleted the record through its own Clear flow — it asked its own
+    /// question, and this canvas must not ask a second one or send anything back. Blank the
+    /// page and drop the recovery copy so the deleted drawing cannot offer itself back.
+    func clearFromWeb() {
+        autosaveTimer?.invalidate()
+        canvasView.drawing = PKDrawing()
+        InkRecovery.clear(noteId: request.noteId)
+    }
+
     @objc private func handleDone() {
         autosaveTimer?.invalidate()
         // The flush. Sent before dismissing so the web page has the final state even if the
@@ -340,6 +427,20 @@ final class InkCanvasViewController: UIViewController {
         // a screen that never took ownership of the note must not delete a recovery copy it
         // deliberately refused to offer.
         if !loadFailed { InkRecovery.clear(noteId: request.noteId) }
+        delegate?.inkCanvasDidFinish(self)
+    }
+
+    /// The inline teardown, on `ink.finish` from the page.
+    ///
+    /// Same flush as Done with one deliberate difference: the recovery copy is KEPT. The emit
+    /// crosses into JavaScript on a page that is tearing itself down, and there is no way to
+    /// confirm it arrived — so the on-device copy stays as the net. The next open of this note
+    /// compares and quietly discards it when the page already has everything, which is the
+    /// mechanism that was device-tested on day one.
+    func finishFromWeb() {
+        autosaveTimer?.invalidate()
+        if !loadFailed { InkRecovery.save(canvasView.drawing, noteId: request.noteId) }
+        emit(.inkClose)
         delegate?.inkCanvasDidFinish(self)
     }
 
@@ -428,12 +529,12 @@ final class InkCanvasViewController: UIViewController {
         guard !bounds.isNull, !bounds.isEmpty else { return nil }
 
         let padding: CGFloat = 24
-        let pageWidth = max(canvasView.contentSize.width, bounds.maxX + padding)
+        let exportWidth = max(pageWidth, bounds.maxX + padding)
 
         let rect = CGRect(
             x: 0,
             y: max(0, bounds.minY - padding),
-            width: pageWidth,
+            width: exportWidth,
             height: bounds.height + padding * 2
         )
         guard rect.width > 0, rect.height > 0 else { return nil }

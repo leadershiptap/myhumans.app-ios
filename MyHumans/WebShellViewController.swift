@@ -127,13 +127,39 @@ final class WebShellViewController: UIViewController {
     private func presentInk(_ request: Bridge.OpenInkRequest) {
         guard inkController == nil else { return }
 
-        let ink = InkCanvasViewController(request: request)
+        // A frame means the v2 web app wants the canvas IN the page, beside the person's
+        // details. No frame is the v1 contract: a modal screen with its own bar.
+        if let frame = request.frame {
+            let ink = InkCanvasViewController(request: request, mode: .inline)
+            ink.delegate = self
+            inkController = ink
+
+            addChild(ink)
+            ink.view.frame = frame
+            // Above the web view, which stays interactive everywhere else — the page renders
+            // the buttons, this rectangle is only the paper.
+            view.addSubview(ink.view)
+            ink.didMove(toParent: self)
+            return
+        }
+
+        let ink = InkCanvasViewController(request: request, mode: .modal)
         ink.delegate = self
         inkController = ink
 
         let nav = UINavigationController(rootViewController: ink)
+        // The asset-catalog accent does not reliably reach a modally presented bar, and the
+        // default systemBlue reads as off-brand next to the app's navy. Named colour, so the
+        // dark variant still applies.
+        nav.navigationBar.tintColor = UIColor(named: "AccentColor")
         nav.modalPresentationStyle = .fullScreen
         present(nav, animated: true)
+    }
+
+    private func tearDownInlineInk(_ ink: InkCanvasViewController) {
+        ink.willMove(toParent: nil)
+        ink.view.removeFromSuperview()
+        ink.removeFromParent()
     }
 }
 
@@ -159,6 +185,21 @@ extension WebShellViewController: WKScriptMessageHandler {
         switch inbound {
         case .openInk(let request):
             presentInk(request)
+        case .setFrame(let frame):
+            // Layout changed under the inline canvas — fullscreen toggled, sidebar collapsed,
+            // rotation. Unanimated: the page's own layout change isn't animated either, and a
+            // lagging canvas visibly detaches from the page around it.
+            inkController?.view.frame = frame
+        case .setPrefs(let prefs):
+            inkController?.apply(prefs)
+        case .undo:
+            inkController?.undoFromWeb()
+        case .redo:
+            inkController?.redoFromWeb()
+        case .finish:
+            inkController?.finishFromWeb()
+        case .clearCanvas:
+            inkController?.clearFromWeb()
         }
     }
 }
@@ -180,9 +221,15 @@ extension WebShellViewController: InkCanvasViewControllerDelegate {
     }
 
     func inkCanvasDidFinish(_ controller: InkCanvasViewController) {
-        // Dismissed from here rather than from the ink controller: it sits inside a navigation
-        // controller, so it is not itself the presented view controller, and this shell is.
-        dismiss(animated: true)
+        switch controller.mode {
+        case .inline:
+            tearDownInlineInk(controller)
+        case .modal:
+            // Dismissed from here rather than from the ink controller: it sits inside a
+            // navigation controller, so it is not itself the presented view controller, and
+            // this shell is.
+            dismiss(animated: true)
+        }
         inkController = nil
     }
 }

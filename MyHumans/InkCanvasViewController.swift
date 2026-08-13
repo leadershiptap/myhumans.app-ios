@@ -249,15 +249,35 @@ final class InkCanvasViewController: UIViewController {
             message: "The app closed before this was saved. Put it back on the page?",
             preferredStyle: .alert
         )
-        alert.addAction(UIAlertAction(title: "Put it back", style: .default) { [weak self] _ in
+        alert.addAction(UIAlertAction(title: "Restore", style: .default) { [weak self] _ in
             guard let self else { return }
             self.canvasView.drawing = recovered
             self.growContentIfNeeded()
             // Straight onto the normal autosave path, so this stops being the only copy.
             self.scheduleAutosave()
         })
+        alert.addAction(UIAlertAction(title: "Discard", style: .destructive) { [weak self] _ in
+            self?.confirmDiscardOfRecovery()
+        })
+        present(alert, animated: true)
+    }
+
+    /// Discarding is the one irreversible button on this alert: the copy being thrown away is, by
+    /// definition, the only one left. Everything else here can be undone by opening the note
+    /// again, so this is the only place a second tap is worth asking for.
+    private func confirmDiscardOfRecovery() {
         let noteId = request.noteId
-        alert.addAction(UIAlertAction(title: "Discard it", style: .destructive) { _ in
+        let alert = UIAlertController(
+            title: "Discard the unsaved handwriting?",
+            message: "This is the only copy. Once it's gone it can't be brought back.",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "Keep it", style: .cancel) { [weak self] _ in
+            // Cancelling must leave the copy exactly where it was, and put the choice back rather
+            // than silently dropping it — otherwise a mis-tap costs the note anyway.
+            self?.offerRecoveryIfNeeded()
+        })
+        alert.addAction(UIAlertAction(title: "Discard", style: .destructive) { _ in
             InkRecovery.clear(noteId: noteId)
         })
         present(alert, animated: true)

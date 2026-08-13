@@ -13,15 +13,38 @@ This file is what to do first.
 
 | | |
 |---|---|
-| Compiles | **Yes** — verified on GitHub's macOS 15 / Xcode 16 runners, simulator build, every push |
+| Compiles | **Yes** — GitHub's macOS 15 / Xcode 16 runners every push, and locally on Xcode 26.6 |
 | Bridge logic tested | **Yes** — 21 Vitest tests in `web/`, green in CI |
-| Ever run on a device | **No** |
-| Ever run in the simulator | **No** |
-| Apple Pencil verified | **No** — and it cannot be, in a simulator |
-| Signed / installable | **No** — needs a signing identity, which needs your Mac |
+| Ever run on a device | **Yes** — 13 Aug 2026, iPad Air (`iPad15,3`) |
+| Ever run in the simulator | **Yes** — iPad Pro 11-inch, bridge injection confirmed |
+| Apple Pencil verified | **Yes** — see §3c below |
+| Sign-in / auth verified | **Yes** — including Microsoft, see §3a below |
+| Signed / installable | **Yes** — free personal team `W6Q5F68ZAQ`, 7-day profile |
 | Touches the `myhumansapp` repo | **No, and must not yet** — see §6 |
 
-Treat anything about *behaviour* below as a prediction. Anything about *structure* is verified.
+Treat anything about *behaviour* below as a prediction unless §3 marks it verified. Anything about
+*structure* is verified.
+
+### Verified on device, 13 Aug 2026
+
+§3c passed in full on an iPad Air with an **Apple Pencil Pro**. Palm rejection is a non-event —
+resting a hand on the glass while writing produced no stray marks and no dropped strokes. Reopen
+returns strokes still editable, not a flattened picture. Undo/redo, the tool picker, finger
+scrolling while holding the Pencil, Clear, and Done-on-blank all behaved. Reported as
+indistinguishable from Apple Notes.
+
+**That answers open question 1 in §8: the Pencil premise holds.** The WebKit limitation quoted in
+`README.md` is gone by construction, as predicted.
+
+**§3a passed too, and the Microsoft risk did not materialise.** Email-and-password sign-in
+completed inside the web view; the session survived a force-quit and relaunch, so cookies on
+`WKWebsiteDataStore.default()` persist as designed; and **reconnecting a calendar over Microsoft
+OAuth succeeded inside the web view.** The contingency in §3a — routing the OAuth hop through
+`ASWebAuthenticationSession` — is therefore **not needed**. Leave it unbuilt. Nothing was
+disabled, spoofed, or worked around to get this; the user agent is still untouched per §5.
+
+§3b (whole-app smoke — driving every screen looking for layout breakage) is still untested, and is
+now the next thing on a device.
 
 ---
 
@@ -154,7 +177,10 @@ Each is either load-bearing or was already fixed once.
   list in Swift, stop.
 - **Do not upgrade or touch tldraw** in the other repo. It is pinned to an exact version because
   upgrading is a one-way door for saved handwriting.
-- **Do not buy the $99 Apple Developer account yet.** A free Apple ID covers all of §3.
+- ~~**Do not buy the $99 Apple Developer account yet.**~~ Overtaken by events — Josh bought it on
+  13 Aug 2026. It is **not yet reaching Xcode**: the profile issued on that date is a free personal
+  team (`W6Q5F68ZAQ`, "Joshua Hartsell", 7-day expiry), so the 7-day reinstall still applies. Likely
+  an unsigned agreement at developer.apple.com or a membership still processing. Not blocking §3.
 
 ---
 

@@ -68,17 +68,29 @@ on the iPad. Nothing else in the function moves.
 
 | Plan | What to do |
 |---|---|
-| `save` | `writeDraft(...)` **first**, then `commit({ forceImage })` with the flag from the plan |
+| `save` | `writeDraft(...)` **first**, then `commit({ forceImage, final })` with the flags from the plan |
 | `delete` | the existing discard path — bump `discardGenRef`, `clearDraft`, `deleteNoteAction` |
 | `closed` | re-render so the page stops showing an editing state. Write nothing |
 | `ignore` | nothing, and nothing to undo |
 
-> **Correction, found by reading the file.** An earlier version of this document said to call
-> `commit({ final: false })` and `commit({ forceImage: true, final: true })`. There is no `final`
-> option: `commit()` at line 447 takes `{ forceImage }` and nothing else. The `final` behaviour
-> described further up this page is the on-the-way-out flush at line 567, which is a separate
-> function that decides *whether* to call `commit`, not an argument to it. `planNativeInk` returns
-> `forceImage` alone, which is what actually exists.
+> **A correction that was itself wrong — read this before trusting a claim about the other repo.**
+> This document briefly said `commit()` has no `final` option and takes `{ forceImage }` alone.
+> That was wrong, and the original text was right: the signature is
+> `commit({ forceImage = false, final = false })`.
+>
+> The mistake came from reading `TakeNotesCanvas.tsx` in the local `myhumansapp` checkout without
+> checking what it was pointed at. It sat on an old branch, nine commits behind `main`, where the
+> signature genuinely did take `forceImage` alone. Everything about the reading was careful except
+> the one step that mattered.
+>
+> **So: `git log --oneline -1` and `git status -sb` in that repo before quoting a line number out
+> of it.** A stale checkout reads exactly like a current one, and both halves of this contract are
+> designed on the assumption that what is written here matches what is actually there.
+>
+> `forceImage` and `final` are deliberately separate. `forceImage` refreshes the PNG every note
+> preview reads. `final` revalidates the person's profile, which Next turns into a full page
+> rebuild — around 30 database reads, and paying that every few seconds of handwriting is what
+> stalled the app mid-session.
 
 The whole routing decision is `planNativeInk` in `nativeInkPlan.ts` — a pure function with 8
 tests, so the rules that cost something when got wrong (an empty page overwriting handwriting, a

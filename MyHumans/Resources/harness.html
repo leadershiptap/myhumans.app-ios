@@ -1,0 +1,132 @@
+<!doctype html>
+<!--
+  The bridge test harness.
+
+  This page stands in for the real take-notes screen so the PencilKit canvas and all four
+  bridge messages can be finished and verified without touching the myhumansapp repo. Set
+  Config.startTarget = .harness and the shell loads this instead of the live site.
+
+  It exercises:
+    - feature detection (window.__myhumansNative, injected at document start)
+    - ink.open with no drawing (new note) and with the last returned drawing (reopen/edit)
+    - ink.autosave / ink.close (renders the returned PNG, keeps the drawing blob for reopen)
+    - ink.discard
+
+  Nothing here is shipped to users. When Config.startTarget = .liveApp this file is inert.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MyHumans bridge harness</title>
+<style>
+  body { font: 16px -apple-system, sans-serif; margin: 24px; background: #f8fafc; color: #0f172a; }
+  h1 { font-size: 20px; }
+  button { font-size: 17px; padding: 12px 18px; margin: 6px 8px 6px 0; border-radius: 10px;
+           border: 1px solid #cbd5e1; background: #fff; }
+  button:active { background: #e2e8f0; }
+  #status { padding: 10px 14px; border-radius: 10px; background: #e2e8f0; margin: 12px 0; }
+  #log { font: 13px ui-monospace, monospace; white-space: pre-wrap; background: #0f172a;
+         color: #e2e8f0; padding: 12px; border-radius: 10px; min-height: 120px; }
+  #png { max-width: 100%; border: 1px solid #cbd5e1; border-radius: 10px; margin-top: 12px;
+         display: none; }
+</style>
+</head>
+<body>
+<h1>MyHumans bridge harness</h1>
+<div id="status"></div>
+
+<button id="open-new">Open ink (new note)</button>
+<button id="open-existing" disabled>Reopen last drawing</button>
+<button id="open-dark">Open ink (dark)</button>
+
+<div id="log"></div>
+<img id="png" alt="last returned PNG">
+
+<script>
+(function () {
+  'use strict';
+
+  var logEl = document.getElementById('log');
+  var statusEl = document.getElementById('status');
+  var pngEl = document.getElementById('png');
+  var reopenBtn = document.getElementById('open-existing');
+
+  // What the real web app will hold in its localStorage draft: the last drawing blob and the
+  // note id it belongs to.
+  var lastDrawing = null;
+  var messageCounts = {};
+
+  function log(line) {
+    logEl.textContent += line + '\n';
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  // --- feature detection, exactly as lib/native/bridge.ts will do it ---
+  var native = window.__myhumansNative;
+  if (native && Array.isArray(native.caps) && native.caps.indexOf('ink') !== -1) {
+    statusEl.textContent = 'Shell detected — version ' + native.version +
+      ', caps: ' + native.caps.join(', ');
+  } else {
+    statusEl.textContent = 'NO SHELL DETECTED — __myhumansNative is missing. ' +
+      'The user script did not inject, or this page is open in plain Safari.';
+    statusEl.style.background = '#fecaca';
+  }
+
+  // --- native → web ---
+  // The shell calls this with (name, base64-of-JSON). Signature must match Bridge.emitScript.
+  window.__myhumansNativeEmit = function (name, b64) {
+    var payload;
+    try {
+      payload = JSON.parse(atob(b64));
+    } catch (e) {
+      log('DECODE FAILED for ' + name + ': ' + e.message);
+      return;
+    }
+
+    messageCounts[name] = (messageCounts[name] || 0) + 1;
+
+    if (name === 'ink.autosave' || name === 'ink.close') {
+      lastDrawing = payload.drawing;
+      reopenBtn.disabled = false;
+      pngEl.src = 'data:image/png;base64,' + payload.png;
+      pngEl.style.display = 'block';
+      log(name + ' #' + messageCounts[name] +
+        '  noteId=' + payload.noteId +
+        '  format=' + payload.format +
+        '  drawing=' + Math.round(payload.drawing.length / 1024) + 'kb' +
+        '  png=' + Math.round(payload.png.length / 1024) + 'kb');
+    } else if (name === 'ink.discard') {
+      lastDrawing = null;
+      reopenBtn.disabled = true;
+      pngEl.style.display = 'none';
+      log('ink.discard  noteId=' + payload.noteId);
+    } else {
+      // Rule 1 mirror: an unknown message from a newer shell is logged, never thrown.
+      log('unknown message ignored: ' + name);
+    }
+  };
+
+  // --- web → native ---
+  function post(payload) {
+    window.webkit.messageHandlers.myhumans.postMessage({ name: 'ink.open', payload: payload });
+  }
+
+  document.getElementById('open-new').addEventListener('click', function () {
+    log('→ ink.open (new)');
+    post({ noteId: 'recHARNESS1', drawing: null, title: 'Harness — new note', darkMode: false });
+  });
+
+  reopenBtn.addEventListener('click', function () {
+    log('→ ink.open (reopen, ' + Math.round(lastDrawing.length / 1024) + 'kb)');
+    post({ noteId: 'recHARNESS1', drawing: lastDrawing, title: 'Harness — reopened', darkMode: false });
+  });
+
+  document.getElementById('open-dark').addEventListener('click', function () {
+    log('→ ink.open (dark)');
+    post({ noteId: 'recHARNESS2', drawing: null, title: 'Harness — dark', darkMode: true });
+  });
+})();
+</script>
+</body>
+</html>

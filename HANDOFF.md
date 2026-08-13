@@ -18,7 +18,7 @@ This file is what to do first.
 | Ever run on a device | **Yes** — 13 Aug 2026, iPad Air (`iPad15,3`) |
 | Ever run in the simulator | **Yes** — iPad Pro 11-inch, bridge injection confirmed |
 | Apple Pencil verified | **Yes** — see §3c below |
-| Sign-in / auth verified | **No** — §3a is the remaining go/no-go |
+| Sign-in / auth verified | **Yes** — including Microsoft, see §3a below |
 | Signed / installable | **Yes** — free personal team `W6Q5F68ZAQ`, 7-day profile |
 | Touches the `myhumansapp` repo | **No, and must not yet** — see §6 |
 
@@ -36,7 +36,15 @@ indistinguishable from Apple Notes.
 **That answers open question 1 in §8: the Pencil premise holds.** The WebKit limitation quoted in
 `README.md` is gone by construction, as predicted.
 
-§3a (sign-in, and the Microsoft-in-a-web-view risk) and §3b (whole-app smoke) are still untested.
+**§3a passed too, and the Microsoft risk did not materialise.** Email-and-password sign-in
+completed inside the web view; the session survived a force-quit and relaunch, so cookies on
+`WKWebsiteDataStore.default()` persist as designed; and **reconnecting a calendar over Microsoft
+OAuth succeeded inside the web view.** The contingency in §3a — routing the OAuth hop through
+`ASWebAuthenticationSession` — is therefore **not needed**. Leave it unbuilt. Nothing was
+disabled, spoofed, or worked around to get this; the user agent is still untouched per §5.
+
+§3b (whole-app smoke — driving every screen looking for layout breakage) is still untested, and is
+now the next thing on a device.
 
 ---
 

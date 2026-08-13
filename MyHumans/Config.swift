@@ -16,12 +16,16 @@ enum Config {
         case harness
     }
 
-    /// Flip this while working on the ink screen.
+    /// Flip this to `.harness` while working on the ink screen itself.
+    ///
+    /// It shipped as `.harness` while the web app had never heard of this shell. That ended on
+    /// 13 Aug 2026: the bolt-on is merged and deployed, so the real app now opens the native
+    /// canvas and the harness is a development tool rather than the only page that works.
     ///
     /// There is deliberately no in-app switch. A debug toggle is one more thing that can be left
     /// in the wrong position and ship, and this is a two-character edit followed by a rebuild
     /// that takes seconds.
-    static let startTarget: StartTarget = .harness
+    static let startTarget: StartTarget = .liveApp
 
     /// The deployed app. Note there is no localhost option and there cannot usefully be one:
     /// Clerk's production keys only resolve `myhumans.app`, so no authenticated page renders

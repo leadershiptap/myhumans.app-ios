@@ -273,31 +273,59 @@ final class InkCanvasViewController: UIViewController {
 
     /// Builds a result and hands it to the delegate.
     ///
-    /// Refuses in three cases, each of which would otherwise destroy something:
+    /// Two things stop content ever being sent, each of which would otherwise destroy something:
     ///   - the incoming drawing failed to load, so what is on screen is not the note;
-    ///   - the page is empty, because erasing everything is not a request for a blank note
-    ///     (the web canvas has the same rule);
-    ///   - the picture could not be rendered, because the app displays ink from the picture
-    ///     everywhere, so saving the strokes without one produces a note nothing can show.
+    ///   - the picture could not be rendered, because every surface in the app displays ink from
+    ///     the picture, so saving strokes without one produces a note nothing can show.
+    ///
+    /// An empty page is different: `ink.close` still fires, carrying `isEmpty`. The web page
+    /// always learns the screen was dismissed, and the rule about what an emptied canvas means
+    /// stays in the one place it already lives rather than being duplicated here.
     private func emit(_ message: Bridge.OutboundMessage) {
+        guard case .inkAutosave = message else {
+            emitFinal(message)
+            return
+        }
         guard !loadFailed else { return }
 
         let drawing = canvasView.drawing
         guard !drawing.bounds.isNull, !drawing.bounds.isEmpty else { return }
         guard let png = renderPNG(for: drawing) else { return }
 
-        let result = Bridge.InkResult(
+        delegate?.inkCanvas(self, didProduce: result(for: drawing, png: png), as: .inkAutosave)
+    }
+
+    private func emitFinal(_ message: Bridge.OutboundMessage) {
+        guard case .inkClose = message else { return }
+
+        // A failed load must not report a blank page as the note's new state — that is exactly
+        // the overwrite this screen refuses to perform. Say nothing instead.
+        guard !loadFailed else { return }
+
+        let drawing = canvasView.drawing
+        guard
+            !drawing.bounds.isNull,
+            !drawing.bounds.isEmpty,
+            let png = renderPNG(for: drawing)
+        else {
+            delegate?.inkCanvas(
+                self,
+                didProduce: .empty(noteId: request.noteId),
+                as: .inkClose
+            )
+            return
+        }
+
+        delegate?.inkCanvas(self, didProduce: result(for: drawing, png: png), as: .inkClose)
+    }
+
+    private func result(for drawing: PKDrawing, png: Data) -> Bridge.InkResult {
+        Bridge.InkResult(
             noteId: request.noteId,
             drawing: drawing.dataRepresentation().base64EncodedString(),
-            png: png.base64EncodedString()
+            png: png.base64EncodedString(),
+            isEmpty: false
         )
-
-        switch message {
-        case .inkAutosave, .inkClose:
-            delegate?.inkCanvas(self, didProduce: result, as: message)
-        case .inkDiscard:
-            delegate?.inkCanvasDidDiscard(self, noteId: request.noteId)
-        }
     }
 
     // MARK: - Export

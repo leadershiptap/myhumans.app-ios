@@ -87,6 +87,12 @@
     messageCounts[name] = (messageCounts[name] || 0) + 1;
 
     if (name === 'ink.autosave' || name === 'ink.close') {
+      // ink.close fires even for a blank page, so the page always learns the screen closed.
+      // The real app applies its existing rule here: an emptied canvas is never committed.
+      if (payload.isEmpty) {
+        log(name + '  noteId=' + payload.noteId + '  EMPTY — nothing to save');
+        return;
+      }
       lastDrawing = payload.drawing;
       reopenBtn.disabled = false;
       pngEl.src = 'data:image/png;base64,' + payload.png;

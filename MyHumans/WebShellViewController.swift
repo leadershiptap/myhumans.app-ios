@@ -180,7 +180,9 @@ extension WebShellViewController: InkCanvasViewControllerDelegate {
     }
 
     func inkCanvasDidFinish(_ controller: InkCanvasViewController) {
-        controller.presentingViewController?.dismiss(animated: true)
+        // Dismissed from here rather than from the ink controller: it sits inside a navigation
+        // controller, so it is not itself the presented view controller, and this shell is.
+        dismiss(animated: true)
         inkController = nil
     }
 }

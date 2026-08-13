@@ -126,15 +126,35 @@ extension Bridge {
     /// Payload for `ink.autosave` and `ink.close`.
     struct InkResult: Encodable {
         let noteId: String?
+
         /// Base64 `PKDrawing.dataRepresentation()` — the editable source. Opaque to everything
         /// downstream: the server gzips and stores it without knowing what produced it.
+        /// Empty when `isEmpty` is true.
         let drawing: String
+
         /// Base64 PNG, background composited in. This is what every surface in the app actually
         /// renders, so it has to be a finished picture, not a transparent overlay.
+        /// Empty when `isEmpty` is true.
         let png: String
+
+        /// The coach left a blank page.
+        ///
+        /// `ink.close` fires even then, so the web page always learns the screen was dismissed
+        /// and can re-render — but it carries no content, and the web side's existing rule
+        /// applies unchanged: erasing everything is not a request for a blank note, so nothing
+        /// is committed. Deleting is what Clear is for, and that arrives as `ink.discard`.
+        ///
+        /// Sending the message and letting the web side decide keeps that rule in the one place
+        /// it already lives, rather than duplicating it here where it could drift.
+        let isEmpty: Bool
+
         /// Which editor produced `drawing`. The web app stores this so it knows a tldraw canvas
         /// cannot open it.
         let format = "pencilkit"
+
+        static func empty(noteId: String?) -> InkResult {
+            InkResult(noteId: noteId, drawing: "", png: "", isEmpty: true)
+        }
     }
 
     /// Payload for `ink.discard`.

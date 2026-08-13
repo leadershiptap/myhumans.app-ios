@@ -40,8 +40,13 @@ annotation and no behaviour change at all.
 | `web/bridge.test.ts` | `lib/native/bridge.test.ts` |
 | `web/inkSource.ts` | `lib/native/inkSource.ts` |
 | `web/inkSource.test.ts` | `lib/native/inkSource.test.ts` |
+| `web/nativeInkPlan.ts` | `lib/native/nativeInkPlan.ts` |
+| `web/nativeInkPlan.test.ts` | `lib/native/nativeInkPlan.test.ts` |
+| `web/inkEditor.ts` | `lib/native/inkEditor.ts` |
+| `web/inkEditor.test.ts` | `lib/native/inkEditor.test.ts` |
 
-21 tests, all passing here. Delete `web/` from this repo once they have moved.
+43 tests, all passing here, and the four sources type-check under `--strict`. Delete `web/` from
+this repo once they have moved.
 
 ### 2. `TakeNotesCanvas.tsx`
 
@@ -59,13 +64,49 @@ on the iPad. Nothing else in the function moves.
 
 - When `hasNativeInk()`, do not mount `TldrawNoteCanvas`. Render the note's current picture (or
   an empty page) and a button that calls `openNativeInk({ noteId, drawing, title, darkMode })`.
-- Register `onNativeInk` in an effect and route each event:
+- Register `onNativeInk` in an effect and hand each event to `planNativeInk`, then do what it says:
 
-| Event | What to do |
+| Plan | What to do |
 |---|---|
-| `autosave` | `writeDraft(...)` **first**, then `commit({ final: false })` |
-| `close` | `writeDraft(...)`, then `commit({ forceImage: true, final: true })` |
-| `discard` | the existing discard path — bump `discardGenRef`, `deleteNoteAction` |
+| `save` | `writeDraft(...)` **first**, then `commit({ forceImage })` with the flag from the plan |
+| `delete` | the existing discard path — bump `discardGenRef`, `clearDraft`, `deleteNoteAction` |
+| `closed` | re-render so the page stops showing an editing state. Write nothing |
+| `ignore` | nothing, and nothing to undo |
+
+> **Correction, found by reading the file.** An earlier version of this document said to call
+> `commit({ final: false })` and `commit({ forceImage: true, final: true })`. There is no `final`
+> option: `commit()` at line 447 takes `{ forceImage }` and nothing else. The `final` behaviour
+> described further up this page is the on-the-way-out flush at line 567, which is a separate
+> function that decides *whether* to call `commit`, not an argument to it. `planNativeInk` returns
+> `forceImage` alone, which is what actually exists.
+
+The whole routing decision is `planNativeInk` in `nativeInkPlan.ts` — a pure function with 8
+tests, so the rules that cost something when got wrong (an empty page overwriting handwriting, a
+discard that leaves the record behind) are verifiable without a React tree, an iPad or a network.
+The handler below is the executor and stays deliberately dumb:
+
+```ts
+useEffect(() => onNativeInk((event) => {
+  const plan = planNativeInk(event)
+  switch (plan.action) {
+    case 'save':
+      // Draft first. `commit()` returns early when offline, and until this message arrived the
+      // drawing lived in the native canvas and nowhere else.
+      writeDraft(draftKey, metaKey, plan.snapshot, captionRef.current, noteIdRef.current)
+      lastEventRef.current = event            // what `inkSourceRef` reads
+      void commitRef.current({ forceImage: plan.forceImage })
+      break
+    case 'delete':
+      void handleClearRef.current()
+      break
+    case 'closed':
+      setNativeEditing(false)
+      break
+    case 'ignore':
+      break
+  }
+}), [draftKey, metaKey])
+```
 
 - Do not run the 250ms scheduler on the native path. It polls `takeDirty()` / `isBusy()` /
   `msSincePenActivity()`, which only a live tldraw editor can answer; the native screen pushes
@@ -98,6 +139,19 @@ Then two rules, both of which degrade rather than break:
 - A `tldraw` note **in the shell** falls back to the tldraw canvas in the web view. It still
   works; it is just glitchy. Of the 298 notes carrying ink data, 294 came from the OneNote
   import and only **4** are tldraw-authored, so this path is nearly theoretical.
+
+Both live in `chooseInkEditor` in `inkEditor.ts`, with `normalizeInkFormat` for the data layer.
+Three things it does that are worth not undoing:
+
+- **An unrecognised format opens read-only on both sides**, rather than being coerced to a real
+  one. A blob handed to an editor that cannot read it renders as an empty page, and an empty page
+  that saves overwrites real handwriting with nothing.
+- **A new note goes through `editorForNewNote`, not `chooseInkEditor`.** A missing format means
+  "row written before the column existed", which is tldraw. "Nothing written yet" is a different
+  question with a different answer, and answering both with one absent value hands a tldraw note
+  to PencilKit. This was a real bug in the first draft, caught by its own test.
+- **The reason string is separate** (`readonlyReason`), because what to tell a coach who cannot
+  edit differs between "your note is on your iPad" and "this app is out of date".
 
 ### 5. Docs
 

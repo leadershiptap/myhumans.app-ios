@@ -79,9 +79,15 @@ on the iPad. Nothing else in the function moves.
 > `commit({ forceImage = false, final = false })`.
 >
 > The mistake came from reading `TakeNotesCanvas.tsx` in the local `myhumansapp` checkout without
-> checking what it was pointed at. It sat on an old branch, nine commits behind `main`, where the
-> signature genuinely did take `forceImage` alone. Everything about the reading was careful except
-> the one step that mattered.
+> checking what it was pointed at. It sits on an abandoned branch **120 commits behind `main`** —
+> `claude/docs-after-outbox`, whose remote was deleted — and on that commit the signature
+> genuinely did take `forceImage` alone. Everything about the reading was careful except the one
+> step that mattered.
+>
+> The number in this paragraph was itself wrong once. It said "nine commits", a figure never
+> measured — the two `git log` outputs merely looked a few apart. `git rev-list --count` says 120.
+> Guessing a specific number reads exactly like having counted one, which is what makes it worse
+> than saying "behind".
 >
 > **So: `git log --oneline -1` and `git status -sb` in that repo before quoting a line number out
 > of it.** A stale checkout reads exactly like a current one, and both halves of this contract are

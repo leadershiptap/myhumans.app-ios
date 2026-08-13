@@ -18,3 +18,4 @@ xcuserdata/
 
 # vitest, when running web/ locally
 node_modules/
+package-lock.json

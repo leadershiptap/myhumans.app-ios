@@ -1,0 +1,57 @@
+name: CI
+
+# Compiles the app on GitHub's macOS runners.
+#
+# This exists because the Swift here was written on a machine with no Xcode and no Apple
+# frameworks, so nothing local can tell whether it builds. A runner can, which turns "unverified
+# until someone opens it on a Mac" into a check that runs on every push.
+#
+# Simulator build only: no signing, no certificates, no Apple Developer account needed. Getting
+# the app onto a real iPad still needs a Mac and a signing identity — this proves the code
+# compiles, not that it installs.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build (iOS Simulator)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show the toolchain
+        run: xcodebuild -version
+
+      - name: Build
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project MyHumans.xcodeproj \
+            -scheme MyHumans \
+            -destination 'generic/platform=iOS Simulator' \
+            -configuration Debug \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO
+
+  web:
+    name: Bridge tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Matches the web repo's Node version, so the TypeScript that eventually moves into
+      # lib/native/ is exercised on the runtime it will actually live on.
+      - run: npm install
+      - run: npm test

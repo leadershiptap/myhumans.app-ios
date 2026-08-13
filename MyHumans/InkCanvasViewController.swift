@@ -69,6 +69,7 @@ final class InkCanvasViewController: UIViewController {
         configureCanvas()
         configureNavigationBar()
         loadIncomingDrawing()
+        observeBackgrounding()
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -84,7 +85,11 @@ final class InkCanvasViewController: UIViewController {
         canvasView.becomeFirstResponder()
         toolPicker = picker
 
-        if loadFailed { presentLoadFailure() }
+        if loadFailed {
+            presentLoadFailure()
+        } else {
+            offerRecoveryIfNeeded()
+        }
     }
 
     override func viewDidLayoutSubviews() {
@@ -204,6 +209,80 @@ final class InkCanvasViewController: UIViewController {
         present(alert, animated: true)
     }
 
+    // MARK: - Crash recovery
+
+    /// The case this protects against is iOS terminating a backgrounded app. Nothing runs, no
+    /// delegate fires, and whatever had not yet crossed the bridge is simply gone. Going into the
+    /// background is the last moment there is to do anything about it.
+    private func observeBackgrounding() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(persistForRecovery),
+            name: UIApplication.didEnterBackgroundNotification,
+            object: nil
+        )
+    }
+
+    @objc private func persistForRecovery() {
+        // A screen that could not open its own note must not write a recovery copy of the blank
+        // page it is showing. That is the same overwrite `loadFailed` exists to prevent.
+        guard !loadFailed else { return }
+        InkRecovery.save(canvasView.drawing, noteId: request.noteId)
+    }
+
+    /// Offered, never applied silently.
+    ///
+    /// A recovered drawing may be older than what the web app already holds — an autosave may well
+    /// have landed after the last copy was written — so this asks rather than assumes. If the page
+    /// already shows exactly what was recovered, there is nothing to ask about and the copy goes
+    /// quietly.
+    private func offerRecoveryIfNeeded() {
+        guard let recovered = InkRecovery.load(noteId: request.noteId) else { return }
+
+        guard recovered.dataRepresentation() != canvasView.drawing.dataRepresentation() else {
+            InkRecovery.clear(noteId: request.noteId)
+            return
+        }
+
+        let alert = UIAlertController(
+            title: "Unsaved handwriting found",
+            message: "The app closed before this was saved. Put it back on the page?",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "Restore", style: .default) { [weak self] _ in
+            guard let self else { return }
+            self.canvasView.drawing = recovered
+            self.growContentIfNeeded()
+            // Straight onto the normal autosave path, so this stops being the only copy.
+            self.scheduleAutosave()
+        })
+        alert.addAction(UIAlertAction(title: "Discard", style: .destructive) { [weak self] _ in
+            self?.confirmDiscardOfRecovery()
+        })
+        present(alert, animated: true)
+    }
+
+    /// Discarding is the one irreversible button on this alert: the copy being thrown away is, by
+    /// definition, the only one left. Everything else here can be undone by opening the note
+    /// again, so this is the only place a second tap is worth asking for.
+    private func confirmDiscardOfRecovery() {
+        let noteId = request.noteId
+        let alert = UIAlertController(
+            title: "Discard the unsaved handwriting?",
+            message: "This is the only copy. Once it's gone it can't be brought back.",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "Keep it", style: .cancel) { [weak self] _ in
+            // Cancelling must leave the copy exactly where it was, and put the choice back rather
+            // than silently dropping it — otherwise a mis-tap costs the note anyway.
+            self?.offerRecoveryIfNeeded()
+        })
+        alert.addAction(UIAlertAction(title: "Discard", style: .destructive) { _ in
+            InkRecovery.clear(noteId: noteId)
+        })
+        present(alert, animated: true)
+    }
+
     // MARK: - Page length
 
     /// Grows the page as the writing approaches the bottom, so it behaves like a pad rather than
@@ -245,6 +324,7 @@ final class InkCanvasViewController: UIViewController {
             guard let self else { return }
             self.autosaveTimer?.invalidate()
             self.canvasView.drawing = PKDrawing()
+            InkRecovery.clear(noteId: self.request.noteId)
             self.delegate?.inkCanvasDidDiscard(self, noteId: self.request.noteId)
             self.delegate?.inkCanvasDidFinish(self)
         })
@@ -256,6 +336,10 @@ final class InkCanvasViewController: UIViewController {
         // The flush. Sent before dismissing so the web page has the final state even if the
         // coach immediately backgrounds the app.
         emit(.inkClose)
+        // Past the flush the copy is stale, and stale recovery is its own kind of data loss. But
+        // a screen that never took ownership of the note must not delete a recovery copy it
+        // deliberately refused to offer.
+        if !loadFailed { InkRecovery.clear(noteId: request.noteId) }
         delegate?.inkCanvasDidFinish(self)
     }
 
@@ -291,6 +375,10 @@ final class InkCanvasViewController: UIViewController {
         let drawing = canvasView.drawing
         guard !drawing.bounds.isNull, !drawing.bounds.isEmpty else { return }
         guard let png = renderPNG(for: drawing) else { return }
+
+        // Written before the message goes out rather than after: if anything downstream of here
+        // fails, the strokes are still on disk.
+        InkRecovery.save(drawing, noteId: request.noteId)
 
         delegate?.inkCanvas(self, didProduce: result(for: drawing, png: png), as: .inkAutosave)
     }

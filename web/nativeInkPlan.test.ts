@@ -19,23 +19,28 @@ const message = (
 })
 
 describe('planNativeInk', () => {
-  it('saves an autosave without forcing a new picture', () => {
-    // The picture is refreshed on a slower cadence than the handwriting. Forcing it here would
-    // put a full page rebuild on every pause in writing.
+  it('saves an autosave without forcing a picture or a page rebuild', () => {
+    // Both flags off, and for different reasons. The picture is refreshed on a slower cadence
+    // than the handwriting; `final` triggers a profile revalidation that Next turns into ~30
+    // database reads, and paying that every few seconds of writing stalled the app mid-session.
     expect(planNativeInk(message('autosave'))).toEqual({
       action: 'save',
       snapshot: b64('drawing-bytes'),
       png: b64('png-bytes'),
       forceImage: false,
+      final: false,
       noteId: 'recABC',
     })
   })
 
-  it('forces the picture on the way out', () => {
+  it('forces the picture and marks it final on the way out', () => {
     // Done is the flush. Whatever the coach last wrote has to reach the previews, which read the
-    // picture and nothing else.
-    const plan = planNativeInk(message('close'))
-    expect(plan).toMatchObject({ action: 'save', forceImage: true })
+    // picture and nothing else — and the profile they are about to land on has to be fresh.
+    expect(planNativeInk(message('close'))).toMatchObject({
+      action: 'save',
+      forceImage: true,
+      final: true,
+    })
   })
 
   it('carries a null note id straight through for a note never saved', () => {

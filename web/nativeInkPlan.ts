@@ -21,8 +21,11 @@ import type { NativeInkEvent } from './bridge'
  * is no scheduler, so if the handler does not write it, a force-quit while offline loses
  * everything the coach wrote.
  *
- * `forceImage` maps to `commit({ forceImage })`. Note there is no `final` flag — `commit()` takes
- * exactly one option, and an earlier draft of `BOLT-ON.md` said otherwise.
+ * `forceImage` and `final` map straight onto `commit({ forceImage, final })`, and they are
+ * deliberately separate even though only the way out sets either. `forceImage` is about the PNG
+ * every note preview reads. `final` is about whether the server action revalidates the person's
+ * profile, which Next turns into a full page rebuild — around 30 database reads. Paying that
+ * every few seconds of handwriting is what stalled the rest of the app mid-session.
  *
  * `delete` — the existing discard path: bump `discardGenRef`, clear the draft, `deleteNoteAction`.
  *
@@ -39,8 +42,10 @@ export type NativeInkPlan =
       snapshot: string
       /** Base64 PNG with the page colour already composited in. */
       png: string
-      /** True only on the way out, so a page rebuild stays off every autosave. */
+      /** True only on the way out — the picture is refreshed on a slower cadence than the ink. */
       forceImage: boolean
+      /** True only on the way out. Keeps a full page rebuild off every autosave. */
+      final: boolean
       noteId: string | null
     }
   | { action: 'delete'; noteId: string | null }
@@ -70,6 +75,7 @@ export function planNativeInk(event: NativeInkEvent): NativeInkPlan {
     snapshot: event.drawing,
     png: event.png,
     forceImage: event.type === 'close',
+    final: event.type === 'close',
     noteId: event.noteId,
   }
 }

@@ -249,6 +249,11 @@ extension Bridge {
         /// `ink.finish`. The web side commits it as final.
         case inkClose = "ink.close"
 
+        /// The coach changed tools with the Pencil itself — a squeeze or a double-tap — so the
+        /// page's toolbar can show what is actually selected. Without it the barrel gesture and
+        /// the on-screen row disagree, and the row is the one that looks broken.
+        case inkToolChanged = "ink.toolChanged"
+
         /// The incoming drawing could not be decoded. Saving is off, the canvas is gone, and
         /// the page should fall back to its read-only picture. A v1 web app's decoder returns
         /// null for the unknown name and ignores it — rule 2, working as designed.
@@ -312,5 +317,12 @@ extension Bridge {
     struct InkLoadFailed: Encodable {
         let session: String?
         let noteId: String?
+    }
+
+    /// Payload for `ink.toolChanged`.
+    struct InkToolChanged: Encodable {
+        let session: String?
+        /// `pen`, `marker` or `eraser` — the same vocabulary the page sends down.
+        let kind: String
     }
 }

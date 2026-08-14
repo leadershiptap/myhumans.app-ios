@@ -119,7 +119,9 @@ Mac to your own iPad. That's why there's no waiting on Apple to approve anything
 Mostly you already do — because there's almost nothing in the iPad repo to keep in sync. It holds
 one screen and a frame. Everything else lives in the web app, once.
 
-The only shared thing is those four messages, and they're deliberately tiny and versioned
+The only shared thing is that one small set of bridge messages — it was four when this was
+written and it is more than that now, which is exactly why the count lives in README's table and
+the authority lives in `Bridge.swift`, not here. They're deliberately tiny and versioned
 precisely so the two repos never have to ship together. There's no build step to wire up, no
 shared library to keep matched, no "deploy these at the same time."
 

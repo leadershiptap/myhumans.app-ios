@@ -137,8 +137,18 @@ extension Bridge {
         }
     }
 
-    /// CSS pixels from `getBoundingClientRect`, which on this WKWebView are points 1:1 — the
-    /// web view is pinned to the shell view's edges and the app's pages do not scroll or zoom.
+    /// CSS pixels of the LAYOUT viewport, straight from `getBoundingClientRect()` — which is
+    /// what the web side measures, and which already has the document's own scroll offset taken
+    /// out of it. At scale 1 these are points 1:1, but that is a coincidence of the resting
+    /// state and not an invariant: turning one of these into a place on screen needs the two
+    /// things only this side can see — the page's magnification, and where WebKit is currently
+    /// showing that viewport — and `placeInlineInk()` in `WebShellViewController` is the one
+    /// place that applies them.
+    ///
+    /// The "pages do not scroll or zoom" reading documented here until August 2026 was true only
+    /// because the take-notes page cannot scroll and nobody had pinched yet. Pages very much can
+    /// zoom. The day one did, the paper landed a whole rectangle-origin away from the page and
+    /// every stroke after it went into an empty div.
     static func rect(from raw: Any?) -> CGRect? {
         guard
             let dict = raw as? [String: Any],

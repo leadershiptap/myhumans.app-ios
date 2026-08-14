@@ -31,11 +31,17 @@ final class WebShellViewController: UIViewController {
     private var webView: WKWebView!
     private var inkController: InkCanvasViewController?
 
-    /// The inline canvas's rectangle as the PAGE reported it, in CSS pixels. Kept so the view
-    /// frame can be re-derived when the web view scrolls underneath it — the keyboard avoiding
-    /// a focused field is the common case — without asking the page to re-measure.
+    /// The inline canvas's rectangle as the PAGE reported it, in CSS pixels of the layout
+    /// viewport. Kept so its place on screen can be re-derived whenever the web view moves or
+    /// rescales underneath it — the keyboard avoiding a focused field, a pinch — without asking
+    /// the page to re-measure, which would tell us nothing: `getBoundingClientRect()` returns
+    /// the same numbers whether or not the page is zoomed.
     private var inlineCSSRect: CGRect?
     private var scrollObservation: NSKeyValueObservation?
+
+    /// Watched separately from the offset, because a programmatic `setZoomScale` can move the
+    /// scale without moving the offset, and KVO delivery order between the two is not promised.
+    private var zoomObservation: NSKeyValueObservation?
 
     /// Auth pop-ups (Microsoft sign-in among them) open via window.open, which WKWebView
     /// surfaces as a request for a new web view. Refusing it shows the coach a button that does
@@ -88,11 +94,21 @@ final class WebShellViewController: UIViewController {
         webView.uiDelegate = self
         webView.allowsBackForwardNavigationGestures = true
         webView.scrollView.contentInsetAdjustmentBehavior = .automatic
-        // The inline canvas is positioned from CSS coordinates, and those live in the scroll
-        // view's content space. Whenever WebKit moves that space — keyboard avoidance, the
-        // automatic safe-area inset, a programmatic scroll — the canvas must move with it or
-        // it visibly detaches from the page it is pretending to be part of.
+        // The inline canvas is placed from a rectangle the PAGE measured, and that rectangle says
+        // nothing about where WebKit is currently showing the viewport or at what magnification.
+        // Both live on the scroll view, and both move without the page ever hearing about it:
+        // keyboard avoidance and the automatic safe-area inset move the offset, a pinch moves the
+        // offset AND the scale. Miss either and the canvas detaches from the page it is
+        // pretending to be part of.
         scrollObservation = webView.scrollView.observe(\.contentOffset) { [weak self] _, _ in
+            self?.placeInlineInk()
+        }
+        // Zoom is observed in its own right rather than assumed to ride along with an offset
+        // change. A pinch does move both, so this is usually redundant — but a programmatic
+        // `setZoomScale` need not touch the offset at all, and nothing promises which of the two
+        // KVO notifications lands last. Placing from whichever arrives costs a transform
+        // assignment and removes the question.
+        zoomObservation = webView.scrollView.observe(\.zoomScale) { [weak self] _, _ in
             self?.placeInlineInk()
         }
         #if DEBUG
@@ -148,8 +164,17 @@ final class WebShellViewController: UIViewController {
             inkController = ink
 
             addChild(ink)
+            // A view controller's root view arrives with a flexible-width/height autoresizing
+            // mask, and this one is a plain `addSubview` child of a hierarchy that is otherwise
+            // Auto Layout driven — so UIKit would keep re-deriving its frame from the shell's
+            // bounds on every rotation and every Stage Manager resize. Frame arithmetic on a
+            // view carrying a scale transform is undefined: the derived frame is the ALREADY
+            // SCALED rect, so it lands back in `bounds` and the transform scales it a second
+            // time. `placeInlineInk()` is the only thing allowed to say where this rectangle
+            // is, and the mask has to go or UIKit quietly argues with it.
+            ink.view.autoresizingMask = []
             inlineCSSRect = frame
-            ink.view.frame = viewFrame(forCSSRect: frame)
+            placeInlineInk()
             // Above the web view, which stays interactive everywhere else — the page renders
             // the buttons, this rectangle is only the paper.
             view.addSubview(ink.view)
@@ -177,21 +202,57 @@ final class WebShellViewController: UIViewController {
         ink.removeFromParent()
     }
 
-    /// CSS pixels → this view's points.
+    /// The page's rectangle, in CSS pixels of the layout viewport, put on screen.
     ///
-    /// A CSS point is a coordinate in the scroll view's CONTENT space, and the content sits at
-    /// `-contentOffset` in the view. With the automatic safe-area inset the resting offset is
-    /// `-adjustedContentInset.top`, so trusting the raw rect placed the canvas one status bar
-    /// too high — over the strip's own buttons. Subtracting the live offset handles the resting
-    /// case, the keyboard case and any programmatic scroll with one formula.
-    private func viewFrame(forCSSRect rect: CGRect) -> CGRect {
-        let offset = webView.scrollView.contentOffset
-        return rect.offsetBy(dx: -offset.x, dy: -offset.y)
-    }
-
+    /// `getBoundingClientRect()` is measured against the LAYOUT viewport, so the document's own
+    /// scroll offset is already out of the numbers the page sends. What is left is the two things
+    /// only this side can see — the magnification, and where WebKit is currently showing that
+    /// viewport inside the scroll view's content:
+    ///
+    ///     view = (css + window.scroll) * zoomScale - contentOffset
+    ///
+    /// `window.scroll` is zero here by construction: every protected page is an `h-dvh` shell
+    /// whose only scrollers are elements inside it, so the ROOT scroller has nothing to scroll,
+    /// and everything WebKit does — the resting safe-area inset, keyboard avoidance, a pinch —
+    /// is the visual viewport moving, which is exactly what `contentOffset` reports. At rest
+    /// that leaves `css + adjustedContentInset.top`, which is the status bar the canvas used to
+    /// sit over, back when the raw rect was trusted. If a future layout ever lets the DOCUMENT
+    /// scroll, the scroll lands in both terms and the canvas rides up by twice it — that is the
+    /// assumption to re-check, not the inset one.
+    ///
+    /// The zoom term is what was missing until August 2026, and its absence was not a small
+    /// error. At scale 2 the paper landed a whole rectangle-origin away from the page's own
+    /// placeholder at half the size — and that placeholder is an EMPTY div, because this canvas
+    /// is meant to cover it completely, so every stroke after a pinch went into nothing at all:
+    /// no ink, no autosave, no status change, until the page was left and reopened. Neither side
+    /// could recover on its own — the page's re-measure is zoom-invariant, and the offset stops
+    /// changing when the gesture ends.
+    ///
+    /// Scale is applied as a layer transform, never by handing PencilKit a bigger rectangle.
+    /// Changing the canvas's bounds runs its `viewDidLayoutSubviews`, which re-fits the zoom,
+    /// rewrites `contentSize` and makes PencilKit re-tile — many times a second for the length of
+    /// a pinch, which is the expensive work this screen bans anywhere near a live pen. It also
+    /// keeps `view.bounds` in the page's own units, which is what the page-width and
+    /// content-growth arithmetic on the canvas side already reads it as.
     private func placeInlineInk() {
         guard let rect = inlineCSSRect, let ink = inkController, ink.mode == .inline else { return }
-        ink.view.frame = viewFrame(forCSSRect: rect)
+        let scroll = webView.scrollView
+        // A canvas collapsed to a point is indistinguishable from one that vanished, so a scale
+        // WebKit should never report is not one worth passing on either.
+        let zoom = scroll.zoomScale > 0 ? scroll.zoomScale : 1
+        let offset = scroll.contentOffset
+
+        // Only on a real size change: this runs on every offset and every zoom notification, and
+        // an assignment that dirties layout would put that re-tile back under the pen.
+        if ink.view.bounds.size != rect.size {
+            ink.view.bounds = CGRect(origin: .zero, size: rect.size)
+        }
+        ink.view.transform = CGAffineTransform(scaleX: zoom, y: zoom)
+        // `center` is in this view's space and is untouched by the transform, so it is the one
+        // placement that stays correct while the scale changes underneath it. Setting `frame`
+        // with a transform in place is undefined, which is why nothing here sets it — and why
+        // `presentInk()` clears the autoresizing mask, since that is UIKit setting it for you.
+        ink.view.center = CGPoint(x: rect.midX * zoom - offset.x, y: rect.midY * zoom - offset.y)
     }
 }
 
@@ -301,15 +362,17 @@ extension WebShellViewController: WKNavigationDelegate {
             return
         }
 
-        // A real navigation replaces the document, and the SPA's ink.finish never fires for
-        // one — the page that would send it is being torn down by WebKit itself. Same story
-        // as process death: bank the ink, remove the canvas, let the new page start clean.
-        if navigationAction.targetFrame?.isMainFrame == true,
-           let ink = inkController, ink.mode == .inline {
-            ink.persistNow()
-            tearDownInlineInk(ink)
-            inkController = nil
-        }
+        // Nothing is torn down here, deliberately. This method is asked WHETHER to navigate; it
+        // is never told that one happened, and the branch immediately below says no to some of
+        // what it is asked about. The teardown used to run above that branch, so tapping the
+        // coachee's email address in the sidebar — a plain <a href="mailto:">, a main-frame
+        // action — destroyed the canvas and then cancelled the very navigation that was the
+        // reason for destroying it. The page stayed mounted and was never told, so ink.tool,
+        // ink.undo, ink.redo and ink.finish all optional-chained through a nil controller: a
+        // live-looking toolbar over an empty rectangle, for the rest of the visit. Fragment
+        // links, downloads and loads that fail before committing are all the same shape.
+        // Teardown now happens in `didCommit`, where the old document is provably gone; the
+        // strokes are safe in the meantime because backgrounding banks them too.
 
         // mailto: (the celebration email is a real <a href>) and tel: belong to the system.
         if let scheme = url.scheme, ["mailto", "tel", "facetime", "sms"].contains(scheme) {
@@ -320,9 +383,33 @@ extension WebShellViewController: WKNavigationDelegate {
 
         decisionHandler(.allow)
     }
+
+    /// The one moment a real navigation has stopped being hypothetical.
+    ///
+    /// A commit means the old document is gone, which is the one condition the inline canvas
+    /// cannot survive. The page does try to say goodbye — TakeNotesCanvas posts `ink.finish`
+    /// from `pagehide` — but that message has to cross into this process while WebKit is
+    /// already tearing the document down, so it is a courtesy and not a guarantee. This is the
+    /// belt: bank the ink, remove the canvas, let the new document start clean. Same story as
+    /// process death.
+    ///
+    /// The shell starts nothing of its own from here. Whatever is committed now is not the
+    /// document the canvas belonged to, so an `ink.*` sent from this point would run in the NEW
+    /// page carrying the OLD session tag — which is why the tag exists, and why this stays quiet.
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        // The auth pop-up is handed this same delegate so its redirects can be followed, and
+        // every step of a sign-in flow is a main-frame commit in ITS web view. None of them say
+        // anything about the page the canvas is sitting on.
+        guard webView === self.webView, let ink = inkController, ink.mode == .inline else {
+            return
+        }
+        ink.persistNow()
+        tearDownInlineInk(ink)
+        inkController = nil
+    }
 }
 
-// MARK: - Process death and real navigation
+// MARK: - Process death
 
 extension WebShellViewController {
 
@@ -331,7 +418,12 @@ extension WebShellViewController {
     /// that no longer exists. Bank the ink, tear down, reload; the recovery offer on the next
     /// open is the mechanism that was device-tested on day one.
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-        if let ink = inkController {
+        // Which web view died matters. The auth pop-up shares this delegate and, being a
+        // different site, gets a content process of its own — so its crash can arrive here
+        // while the page under the canvas is perfectly alive. Taking a live canvas away because
+        // a sign-in window fell over is the same silent no-paper failure the navigation path
+        // used to have. Reload whichever one died; only the main one's death goes near the ink.
+        if webView === self.webView, let ink = inkController {
             ink.persistNow()
             if ink.mode == .inline { tearDownInlineInk(ink) } else { dismiss(animated: false) }
             inkController = nil

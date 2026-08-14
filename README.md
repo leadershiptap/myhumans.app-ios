@@ -71,8 +71,12 @@ the wrong position and ship, and this is a two-character edit and a rebuild.
 
 ## The bridge
 
-Four messages. That is the entire contract, and it is small on purpose — it is what makes it safe
-for this to be a separate repo while the web app ships independently.
+Nine messages up, five down. It is still small on purpose — that is what makes it safe for this
+to be a separate repo while the web app ships independently — but it stopped being four when the
+canvas moved inline, and this section went on claiming four for long enough that `recoveryKey`,
+`ink.tool` and `ink.hidden` were all load-bearing while being written down nowhere.
+`Bridge.swift` is the authority: if the two ever disagree again, the Swift is right and this
+table is stale.
 
 **Injected at document start**, before any page script runs:
 
@@ -84,12 +88,19 @@ window.__myhumansNative = { version: 2, caps: ['ink', 'ink-inline'] }
 
 | Message | Payload |
 |---|---|
-| `ink.open` | `{ noteId, drawing: base64 \| null, title, darkMode, frame?, prefs? }` — with `frame` the canvas embeds in the page at that rect; without it, full screen (the v1 behaviour) |
+| `ink.open` | `{ noteId, drawing: base64 \| null, title, darkMode, recoveryKey?, frame?, prefs? }` — with `frame` the canvas embeds in the page at that rect; without it, full screen (the v1 behaviour) |
 | `ink.frame` | `{ frame }` — the page laid out again; move the inline canvas |
-| `ink.prefs` | `{ twoFingerScroll?, lockZoom?, darkMode? }` — live settings changes |
+| `ink.prefs` | `{ twoFingerScroll?, lockZoom?, darkMode?, systemToolPicker? }` — live settings changes; a nil field keeps what it had |
+| `ink.tool` | `{ kind, color, width }` — the page's own tool row. `kind` is `pen`, `marker` or `eraser`, and **`width` comes from the page's per-tool table**: the shell never computes a width for a tool it was not given one for |
 | `ink.undo` / `ink.redo` | `{}` — the page's own buttons |
 | `ink.finish` | `{}` — page is done with the canvas; shell flushes (`ink.close`) and tears down |
+| `ink.hidden` | `{ hidden }` — a web dialog needs the screen. The canvas draws above all web content, so without this every dialog opens underneath the paper |
 | `ink.clearCanvas` | `{}` — page already deleted the note; blank the canvas, reply with nothing |
+
+`recoveryKey` is the page's own draft key — scoped to the person and the meeting, and in
+existence before the note has an id. It is what the on-device recovery copy is filed under, and
+it is echoed back as the `session` tag on every reply below. A v1 page sends none, and gets the
+full-screen canvas keyed by note id, which is the v1 contract working.
 
 **Native → web**, via `window.__myhumansNativeEmit(name, base64OfJSON)`:
 
@@ -147,7 +158,12 @@ notes still render everywhere, read-only, from the same flattened PNG they alway
 
 - **`drawingPolicy = .pencilOnly` by default.** Every documented failure in this feature's
   history is a palm or a finger being mistaken for the pen. Fingers scroll, the Pencil writes.
-  The toolbar carries a toggle for anyone without a Pencil to hand.
+  There is a finger-drawing toggle, but only on the MODAL screen's navigation bar
+  (`fingerToggleItem()`, wired from `configureNavigationBar()`, which runs for `.modal` alone) —
+  and the shipped page never opens the modal. On the inline canvas there is no way to draw with
+  a finger at all: the bridge carries no message for it and the page renders no control. This
+  line promised the toggle as though it were on the toolbar the coach can actually see, which
+  sent at least one reader looking for a button that has never existed there.
 - **A drawing that fails to load disables saving.** It renders as an empty page, and an empty
   page that saves overwrites real handwriting with nothing. Same reason `didFailToLoad()` exists
   on the web canvas.

@@ -63,6 +63,29 @@ Every one of these was learned the hard way, most of them from a bug that reache
 - **The recovery copy is keyed by that same draft key**, never by note id. A brand-new note has
   no id until the page's first commit, so keying by id filed every new note under one shared
   slot and offered it to whoever opened a blank page next.
+- **The coach's answer to the recovery question outranks the file.** That copy is derived from
+  the canvas, so while an offer is on screen the canvas is holding the OLDER drawing the page
+  sent — the very reason there was something to ask about. Backgrounding wrote that over the
+  offer, or deleted it outright when the page had sent nothing; the alert itself survived, but a
+  termination while backgrounded did not, and the next open compared the page's drawing against a
+  file now holding the same thing, cleared it, and never mentioned it. Discard is a decision, not
+  a deletion, for the same reason: `ink.finish` fires on every unmount and would re-derive the
+  file from the untouched canvas. Every write goes through `bankRecovery()`, which refuses while
+  an offer is outstanding and after one was declined, and the decline lifts on the next stroke.
+- **A canvas can outlive the note it opened on, so the note id it reports is not the one it was
+  handed.** The page's Clear deletes the record and says so with `ink.clearCanvas`; everything
+  written after that belongs to a note that does not exist yet. While the shell kept stamping the
+  deleted id, the page dropped every autosave AND the closing flush — silently, for the rest of
+  that page's life, with the status line showing nothing wrong. `currentNoteId` goes nil on a
+  Clear and `hasSavedOnce` resets with it. The recovery key deliberately does NOT move: it names
+  the writing session, not the record.
+- **Tear the inline canvas down when a navigation COMMITS, never when one is merely proposed.**
+  `decidePolicyFor` is asked whether to navigate and then cancels some of what it is asked about
+  — `mailto:`, `tel:`, downloads, fragment links. Tearing down there destroyed the canvas and
+  then cancelled the navigation that was the reason for it, leaving a live-looking toolbar over
+  an empty rectangle on a page that was never told. Tapping the coachee's email address in the
+  sidebar was enough. Both that path and content-process death also have to check the web view is
+  the shell's own: the auth pop-up shares the delegate.
 - **The draft is written BEFORE the commit**, every time. `commit()` returns early when offline,
   and until that message arrives the drawing lives in the native canvas and nowhere else.
 - **A drawing that fails to decode disables saving and tells the page.** An empty page that
@@ -78,10 +101,13 @@ Every one of these was learned the hard way, most of them from a bug that reache
 
 Nothing is broken. These are the things a next session would pick up.
 
-1. **Two review angles never ran.** The adversarial review of the inline canvas lost its
-   Swift/geometry and race-condition lenses to a usage limit mid-run. Everything they would have
-   covered is live and working, but unreviewed — and every round that *did* run found something
-   real. This is the highest-value thing left.
+1. ~~**Two review angles never ran.**~~ **Done, 14 Aug 2026.** The Swift/geometry and
+   race-condition lenses ran, adversarially verified, and found six real defects — two of them
+   reachable from one ordinary tap on the take-notes screen. All six are fixed, along with the
+   pinch-zoom failure Josh reproduced by hand and the recovery-discard one he reported. The rules
+   they produced are in section 3 above; the remaining known gaps are listed there too. What is
+   still NOT established: `PKDrawing.dataRepresentation()` being byte-stable across a decode and
+   re-encode. The whole reconcile-on-next-open mechanism rests on it, and nothing has proved it.
 2. **Offline mode.** Agreed in principle, deferred deliberately. Josh is offline at a client
    site once or twice a week. The design conversation is done: cache everything for the ~50
    people he coaches, handwriting images for the last three months, queue writes and replay them

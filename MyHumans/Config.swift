@@ -30,9 +30,16 @@ enum Config {
         /// force-quit, every screen, the Microsoft calendar-connect redirect.
         case liveApp
 
-        /// The bundled stub page, `Resources/harness.html`. Drives all four bridge messages
-        /// against a page we control, so the PencilKit canvas and the whole handoff can be
-        /// finished and verified before the web app knows this shell exists.
+        /// The bundled stub page, `Resources/harness.html`. Drives the v2 INLINE contract — a
+        /// measured rectangle, a draft-key `recoveryKey`, prefs and a page-rendered tool row —
+        /// against a page we control, and still carries one button that opens with no frame,
+        /// which is the only way left to exercise the v1 full-screen modal flow now that the
+        /// real app never asks for it.
+        ///
+        /// It promised "all four" bridge messages until August 2026, by which point that was
+        /// true of nothing: the harness sent no frame at all, so flipping this switch quietly
+        /// tested the modal path while the shipping path was inline. The phrase is paraphrased
+        /// here rather than quoted whole, so the grep that hunts the old claim stays clean.
         case harness
     }
 
@@ -77,24 +84,30 @@ enum Config {
     /// and is what a crash actually falls back on.
     static let recoveryIntervalSeconds: TimeInterval = 20
 
-    /// The eraser and the highlighter are multiples of the chosen pen width, so picking a pen
-    /// width sets all three tools at once and switching between them needs no second thought.
-    ///
     /// The eraser width a Pencil squeeze uses before the page has ever sent one.
     ///
     /// Only reachable when the coach squeezes without having touched the eraser in the tool row
     /// first, which is the common case on a fresh note. Matches the page's default slot, and is
     /// corrected by the page's own message a moment later either way.
+    ///
+    /// This block used to OPEN with "the eraser and the highlighter are multiples of the chosen
+    /// pen width, so picking a pen width sets all three tools at once" — the exact belief that
+    /// turned a squeeze into a 1.5pt eraser. It survived the fix and sat directly above the
+    /// constant that exists BECAUSE it is false. A stale comment on a working line is worse than
+    /// no comment: it is what the next reader reasons from before they read the code.
     static let fallbackEraserWidth: CGFloat = 55
 
-    /// Tool sizes are no longer computed here.
-    ///
-    /// They were ratios of the pen (and multipliers before that), and both were wrong for the
-    /// same reason: the sizes that feel right are not a constant multiple of one another, and a
-    /// multiplier that overshoots an ink's limit is silently clamped — so slots collapsed onto
-    /// one width with nothing to show why. The page now sends the width it wants for the tool
-    /// it is asking for, one readable table per tool, and this side clamps it into whatever the
-    /// chosen ink will actually accept.
+    // Tool sizes are NOT computed here, and this is the note that says so. A plain `//` on
+    // purpose: it documents an ABSENCE, and a `///` block with no declaration beneath it is
+    // documentation for no symbol at all — the compiler simply drops it, and the reader is left
+    // guessing whether it belongs to the constant above or the one below.
+    //
+    // They were ratios of the pen (and multipliers before that), and both were wrong for the
+    // same reason: the sizes that feel right are not a constant multiple of one another, and a
+    // multiplier that overshoots an ink's limit is silently clamped — so slots collapsed onto
+    // one width with nothing to show why. The page now sends the width it wants for the tool
+    // it is asking for, one readable table per tool, and this side clamps it into whatever the
+    // chosen ink will actually accept.
 
     /// Highlighter colour and opacity — a marker laid over words has to leave them readable.
     static let highlighterAlpha: CGFloat = 0.25

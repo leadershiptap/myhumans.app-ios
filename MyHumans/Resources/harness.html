@@ -2,15 +2,30 @@
 <!--
   The bridge test harness.
 
-  This page stands in for the real take-notes screen so the PencilKit canvas and all four
-  bridge messages can be finished and verified without touching the myhumansapp repo. Set
-  Config.startTarget = .harness and the shell loads this instead of the live site.
+  This page stands in for the real take-notes screen so the PencilKit canvas and the whole
+  bridge can be driven without touching the myhumansapp repo. Set Config.startTarget = .harness
+  and the shell loads this instead of the live site.
 
-  It exercises:
+  It speaks bridge v2 — the INLINE contract, which is the one that ships. Until August 2026 it
+  spoke v1 only: every ink.open here carried no frame, no recoveryKey and no prefs, so flipping
+  the switch put the shell into the MODAL path and exercised the one arrangement no coach ever
+  sees. A harness that runs a different code path than the app is worse than no harness, because
+  it reports green.
+
+  What it drives:
     - feature detection (window.__myhumansNative, injected at document start)
-    - ink.open with no drawing (new note) and with the last returned drawing (reopen/edit)
-    - ink.autosave / ink.close (renders the returned PNG, keeps the drawing blob for reopen)
-    - ink.discard
+    - ink.open WITH a measured rectangle, a draft-key recoveryKey and prefs — the inline canvas
+    - ink.frame from a ResizeObserver and a resize listener, the way the real page reports layout
+    - ink.tool from per-tool size tables, because the shell may never compute a width itself
+    - ink.undo, ink.redo, ink.finish, ink.clearCanvas, ink.hidden
+    - every inbound message — ink.autosave, ink.close, ink.toolChanged, ink.loadFailed,
+      ink.discard — and the session tag each one carries, which is the only thing standing
+      between a late flush and another person's record
+
+  And one deliberate throwback: "Open full screen (v1)" sends an ink.open with no frame at all.
+  The real app never sends one, so that button is the ONLY remaining way to reach the modal
+  screen — its nav bar, its Done flush, its trash button (the sole source of ink.discard) and
+  its finger-drawing toggle, which exists nowhere else.
 
   Nothing here is shipped to users. When Config.startTarget = .liveApp this file is inert.
 -->
@@ -22,23 +37,73 @@
 <style>
   body { font: 16px -apple-system, sans-serif; margin: 24px; background: #f8fafc; color: #0f172a; }
   h1 { font-size: 20px; }
-  button { font-size: 17px; padding: 12px 18px; margin: 6px 8px 6px 0; border-radius: 10px;
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: #64748b;
+       margin: 16px 0 4px; }
+  button { font-size: 15px; padding: 9px 13px; margin: 4px 6px 4px 0; border-radius: 10px;
            border: 1px solid #cbd5e1; background: #fff; }
   button:active { background: #e2e8f0; }
+  button[aria-pressed="true"] { background: #0f172a; color: #fff; border-color: #0f172a; }
+  .swatch { width: 34px; height: 34px; padding: 0; }
   #status { padding: 10px 14px; border-radius: 10px; background: #e2e8f0; margin: 12px 0; }
+  /* The rectangle the shell is told to cover. Outlined on purpose: the native canvas is opaque
+     and draws ABOVE all web content, so any of this dashed border still showing once a canvas is
+     open means the shell and the page disagree about where the paper goes. */
+  #ink-frame { height: 440px; margin: 8px 0 16px; border: 2px dashed #94a3b8; border-radius: 10px;
+               display: flex; align-items: center; justify-content: center; color: #94a3b8;
+               font-size: 13px; }
   #log { font: 13px ui-monospace, monospace; white-space: pre-wrap; background: #0f172a;
          color: #e2e8f0; padding: 12px; border-radius: 10px; min-height: 120px; }
   #png { max-width: 100%; border: 1px solid #cbd5e1; border-radius: 10px; margin-top: 12px;
          display: none; }
+
+  /* Fullscreen is a SIZE, not a mode — the same rectangle grows and the canvas follows it over
+     ink.frame. The controls stay above the paper rather than being covered by it, which is not
+     cosmetic: a native canvas draws above every pixel of web content, so a paper that covered
+     the button that shrinks it could not be dismissed at all. The real page keeps its tool strip
+     above the canvas for exactly this reason.
+
+     Hence a column flex rather than a strip pinned at a hard-coded height. The hard-coded one
+     was written first and was wrong: at iPad portrait width the action buttons wrap onto a
+     second line, the strip overflows the height it was given, and `overflow: hidden` clips away
+     the Fullscreen button that shrinks the paper — leaving no way back out. Let the strip be as
+     tall as it needs and give the paper whatever is left. */
+  body.fs h1, body.fs #status, body.fs #opens, body.fs h2, body.fs #log, body.fs #png {
+    display: none;
+  }
+  body.fs { margin: 0; height: 100vh; overflow: hidden; display: flex; flex-direction: column; }
+  body.fs #chrome { flex: 0 0 auto; background: #f8fafc; padding: 8px 12px 0; }
+  body.fs #ink-frame { flex: 1 1 auto; min-height: 0; margin: 0; height: auto; }
 </style>
 </head>
 <body>
 <h1>MyHumans bridge harness</h1>
 <div id="status"></div>
 
-<button id="open-new">Open ink (new note)</button>
-<button id="open-existing" disabled>Reopen last drawing</button>
-<button id="open-dark">Open ink (dark)</button>
+<h2>Open</h2>
+<div id="opens">
+  <button id="open-new">Inline (new note)</button>
+  <button id="open-existing" disabled>Inline (reopen last drawing)</button>
+  <button id="open-dark">Inline (dark)</button>
+  <button id="open-modal">Open full screen (v1, no frame)</button>
+</div>
+
+<h2>Tool row and page chrome — everything the PAGE owns</h2>
+<div id="chrome">
+  <div id="kinds"></div>
+  <div id="slots"></div>
+  <div id="colors"></div>
+  <div id="actions">
+    <button id="undo">Undo</button>
+    <button id="redo">Redo</button>
+    <button id="hidden" aria-pressed="false">Dialog open (ink.hidden)</button>
+    <button id="page-dark" aria-pressed="false">Dark page (ink.prefs)</button>
+    <button id="fullscreen" aria-pressed="false">Fullscreen</button>
+    <button id="clear">Clear (page deleted the note)</button>
+    <button id="finish">Finish (page is done)</button>
+  </div>
+</div>
+
+<div id="ink-frame">the shell should be covering this rectangle exactly</div>
 
 <div id="log"></div>
 <img id="png" alt="last returned PNG">
@@ -50,27 +115,148 @@
   var logEl = document.getElementById('log');
   var statusEl = document.getElementById('status');
   var pngEl = document.getElementById('png');
+  var frameEl = document.getElementById('ink-frame');
   var reopenBtn = document.getElementById('open-existing');
 
-  // What the real web app will hold in its localStorage draft: the last drawing blob and the
-  // note id it belongs to.
+  // The page's own draft key, and so the `session` tag stamped on every reply. Shaped like the
+  // real one (`ink-draft-${humanId}-${meeting}`) because the SHAPE is the contract: scoped to a
+  // person and a meeting, in existence before the note has an id, and never colliding across
+  // people. The on-device recovery copy is filed under this, never under the note id.
+  var DRAFT_KEY = 'ink-draft-harness-2026-08';
+
+  // What the real page holds in its localStorage draft: the last drawing blob it was sent.
   var lastDrawing = null;
   var messageCounts = {};
+
+  // Whether a canvas is live. The shell refuses a second `ink.open` while one is (`presentInk`
+  // guards on `inkController == nil`) and it refuses SILENTLY — so without this the harness
+  // logs a cheerful "→ ink.open" for a message nothing acted on, which is the one thing a
+  // harness must never do.
+  var canvasOpen = false;
 
   function log(line) {
     logEl.textContent += line + '\n';
     logEl.scrollTop = logEl.scrollHeight;
   }
 
-  // --- feature detection, exactly as lib/native/bridge.ts will do it ---
+  // --- the size tables ---
+  //
+  // Copied from NATIVE_TOOL_SIZES in the take-notes page, and a copy on purpose rather than by
+  // accident: sizes live in the PAGE, one table per tool, and the shell is forbidden from
+  // computing a width for a tool it was not given one for — a squeeze that reused the pen's
+  // number shipped a 1.5pt eraser. So a harness with no table of its own cannot drive the tool
+  // at all. The page stays the source of truth; drift here makes the harness less faithful,
+  // never the shipped app wrong.
+  var TOOL_SIZES = {
+    pen: [1, 1.5, 3, 5],
+    marker: [15, 25, 40, 55],
+    eraser: [40, 55, 70, 90]
+  };
+  var SLOT_LABELS = ['Finest', 'Extra Fine', 'Fine', 'Medium'];
+  var COLORS = ['#0f172a', '#1d4ed8', '#be123c', '#15803d'];
+  var DEFAULT_SLOT = 1;
+
+  // Each tool remembers its own slot, exactly as the row does, so switching tools does not
+  // silently resize the one being switched to.
+  var slotByKind = { pen: DEFAULT_SLOT, marker: DEFAULT_SLOT, eraser: DEFAULT_SLOT };
+  var kind = 'pen';
+  var color = COLORS[0];
+
+  function currentTool() {
+    return { kind: kind, color: color, width: TOOL_SIZES[kind][slotByKind[kind]] };
+  }
+
+  // --- feature detection, exactly as lib/native/bridge.ts does it ---
   var native = window.__myhumansNative;
-  if (native && Array.isArray(native.caps) && native.caps.indexOf('ink') !== -1) {
+  var hasInk = !!(native && Array.isArray(native.caps) && native.caps.indexOf('ink') !== -1);
+  var hasInline = hasInk && native.caps.indexOf('ink-inline') !== -1;
+  if (hasInline) {
     statusEl.textContent = 'Shell detected — version ' + native.version +
-      ', caps: ' + native.caps.join(', ');
+      ', caps: ' + native.caps.join(', ') + ' — inline canvas available';
+  } else if (hasInk) {
+    statusEl.textContent = 'v1 SHELL — version ' + native.version + ', caps: ' +
+      native.caps.join(', ') + '. No inline canvas: a frame is ignored and every open presents ' +
+      'full screen, which is the v1 contract working rather than failing.';
+    statusEl.style.background = '#fde68a';
   } else {
     statusEl.textContent = 'NO SHELL DETECTED — __myhumansNative is missing. ' +
       'The user script did not inject, or this page is open in plain Safari.';
     statusEl.style.background = '#fecaca';
+  }
+
+  // --- web → native ---
+  function post(name, payload) {
+    var webkit = window.webkit;
+    var handler = webkit && webkit.messageHandlers && webkit.messageHandlers.myhumans;
+    if (!handler) { log('no shell — dropped ' + name); return; }
+    handler.postMessage({ name: name, payload: payload || {} });
+  }
+
+  // Measured the way the page measures it: `getBoundingClientRect`, rounded. These are CSS
+  // pixels of the layout viewport, not screen points — the shell is what turns them into a place
+  // on screen, because it is the only side that can see where WebKit is showing the page.
+  function measureFrame() {
+    var r = frameEl.getBoundingClientRect();
+    if (r.width < 1 || r.height < 1) return null;
+    return {
+      x: Math.round(r.x),
+      y: Math.round(r.y),
+      width: Math.round(r.width),
+      height: Math.round(r.height)
+    };
+  }
+
+  var watchingFrame = false;
+  function watchFrame() {
+    if (watchingFrame) return;
+    watchingFrame = true;
+    // The rectangle moves whenever the page lays out again — fullscreen, rotation, a panel
+    // collapsing. The observer catches size changes; the window listener catches a pure position
+    // shift, which resizes nothing and so fires no observer.
+    var report = function () {
+      var next = measureFrame();
+      if (next) post('ink.frame', { frame: next });
+    };
+    if (window.ResizeObserver) new ResizeObserver(report).observe(frameEl);
+    window.addEventListener('resize', report);
+  }
+
+  function postTool() {
+    var tool = currentTool();
+    log('→ ink.tool  ' + tool.kind + '  ' + tool.width + 'pt  ' + tool.color);
+    post('ink.tool', tool);
+  }
+
+  function openInline(opts) {
+    if (canvasOpen) {
+      log('a canvas is already open — the shell ignores a second open. Tap Finish first.');
+      return;
+    }
+    var frame = measureFrame();
+    if (!frame) { log('the rectangle is not laid out yet — nothing to embed into'); return; }
+    log('→ ink.open (inline, ' + (opts.drawing
+      ? 'reopen ' + Math.round(opts.drawing.length / 1024) + 'kb' : 'new') + ')');
+    post('ink.open', {
+      noteId: 'recHARNESS1',
+      drawing: opts.drawing || null,
+      title: opts.title,
+      darkMode: !!opts.dark,
+      recoveryKey: DRAFT_KEY,
+      frame: frame,
+      prefs: {
+        twoFingerScroll: true,
+        lockZoom: true,
+        systemToolPicker: false,
+        darkMode: !!opts.dark
+      }
+    });
+    // ink.open carries no tool. A page that never states one leaves the shell writing with the
+    // seed in `configureCanvas()` — a number this side cannot see and must not guess — so the
+    // row says its selection out loud immediately, on the same message queue as the open and
+    // therefore before the canvas is on screen to take a stroke.
+    postTool();
+    watchFrame();
+    canvasOpen = true;
   }
 
   // --- native → web ---
@@ -85,53 +271,220 @@
     }
 
     messageCounts[name] = (messageCounts[name] || 0) + 1;
+    var n = ' #' + messageCounts[name];
+
+    // The session tag is checked first, on every message, because that is what the real page does
+    // and what the tag is for: a flush crosses the bridge asynchronously and can land after the
+    // page has moved to a DIFFERENT person whose canvas is live and listening. A reply that does
+    // not name this session is not this page's to accept. A null session is the v1 shape — the
+    // full-screen button sends no recoveryKey, so its replies legitimately carry none.
+    if (payload.session !== undefined && payload.session !== null &&
+        payload.session !== DRAFT_KEY) {
+      log('!! ' + name + n + ' carries session=' + payload.session +
+        ' — not this page. A real page DROPS it rather than committing it.');
+      return;
+    }
 
     if (name === 'ink.autosave' || name === 'ink.close') {
       // ink.close fires even for a blank page, so the page always learns the screen closed.
       // The real app applies its existing rule here: an emptied canvas is never committed.
+      // Only the close ends the session; an autosave is a tick in the middle of one.
+      if (name === 'ink.close') canvasOpen = false;
       if (payload.isEmpty) {
-        log(name + '  noteId=' + payload.noteId + '  EMPTY — nothing to save');
+        log(name + n + '  noteId=' + payload.noteId + '  EMPTY — nothing to save');
         return;
       }
       lastDrawing = payload.drawing;
       reopenBtn.disabled = false;
-      pngEl.src = 'data:image/png;base64,' + payload.png;
-      pngEl.style.display = 'block';
-      log(name + ' #' + messageCounts[name] +
+      // The picture is EMPTY on the periodic saves. Rendering one is a full-page raster on the
+      // main thread and the coach feels every one, so only the save that mints a record carries
+      // a picture, and so does every flush; the page keeps the note's existing picture between.
+      if (payload.png) {
+        pngEl.src = 'data:image/png;base64,' + payload.png;
+        pngEl.style.display = 'block';
+      }
+      log(name + n +
+        '  session=' + payload.session +
         '  noteId=' + payload.noteId +
         '  format=' + payload.format +
         '  drawing=' + Math.round(payload.drawing.length / 1024) + 'kb' +
-        '  png=' + Math.round(payload.png.length / 1024) + 'kb');
+        '  png=' + (payload.png ? Math.round(payload.png.length / 1024) + 'kb' : 'none'));
+
+    } else if (name === 'ink.toolChanged') {
+      // The Pencil's own squeeze or double-tap. The shell chose the KIND by itself and is
+      // telling us; the WIDTH is still this side's to state, so the row moves and answers with
+      // an ink.tool. Without that answer the gesture and the row disagree about size, and the
+      // row is the half that looks broken.
+      kind = (payload.kind === 'marker' || payload.kind === 'eraser') ? payload.kind : 'pen';
+      log('ink.toolChanged' + n + '  session=' + payload.session + '  kind=' + payload.kind);
+      renderTools();
+      postTool();
+
+    } else if (name === 'ink.loadFailed') {
+      // Saving is off on that canvas for the rest of its life and the paper is going away. The
+      // real page swaps in its read-only picture here: a live-looking rectangle that silently
+      // eats every stroke is the failure this message exists to prevent.
+      // The shell finishes the canvas immediately after this, so the session is over here too.
+      canvasOpen = false;
+      log('ink.loadFailed' + n + '  session=' + payload.session + '  noteId=' + payload.noteId +
+        '  — saving is DISABLED; fall back to the read-only picture');
+
     } else if (name === 'ink.discard') {
+      // Only ever from the modal screen's trash button. The inline page deletes the record
+      // itself and tells the shell with ink.clearCanvas, which is answered with nothing.
+      // The trash button discards AND finishes, so the modal is gone by the time this lands.
+      canvasOpen = false;
       lastDrawing = null;
       reopenBtn.disabled = true;
       pngEl.style.display = 'none';
-      log('ink.discard  noteId=' + payload.noteId);
+      log('ink.discard' + n + '  session=' + payload.session + '  noteId=' + payload.noteId);
+
     } else {
       // Rule 1 mirror: an unknown message from a newer shell is logged, never thrown.
       log('unknown message ignored: ' + name);
     }
   };
 
-  // --- web → native ---
-  function post(payload) {
-    window.webkit.messageHandlers.myhumans.postMessage({ name: 'ink.open', payload: payload });
+  // --- the tool row ---
+  function button(label, pressed, onClick) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = label;
+    b.setAttribute('aria-pressed', pressed ? 'true' : 'false');
+    b.addEventListener('click', onClick);
+    return b;
   }
 
+  function renderTools() {
+    var kinds = document.getElementById('kinds');
+    var slots = document.getElementById('slots');
+    var colors = document.getElementById('colors');
+    kinds.innerHTML = '';
+    slots.innerHTML = '';
+    colors.innerHTML = '';
+
+    ['pen', 'marker', 'eraser'].forEach(function (k) {
+      kinds.appendChild(button(k, k === kind, function () {
+        kind = k;
+        renderTools();
+        postTool();
+      }));
+    });
+
+    TOOL_SIZES[kind].forEach(function (width, i) {
+      slots.appendChild(button(SLOT_LABELS[i] + ' — ' + width + 'pt', i === slotByKind[kind],
+        function () {
+          slotByKind[kind] = i;
+          renderTools();
+          postTool();
+        }));
+    });
+
+    COLORS.forEach(function (value) {
+      var b = button('', value === color, function () {
+        color = value;
+        renderTools();
+        postTool();
+      });
+      b.className = 'swatch';
+      b.style.background = value;
+      b.title = value;
+      colors.appendChild(b);
+    });
+  }
+
+  renderTools();
+
+  // --- the buttons ---
   document.getElementById('open-new').addEventListener('click', function () {
-    log('→ ink.open (new)');
-    post({ noteId: 'recHARNESS1', drawing: null, title: 'Harness — new note', darkMode: false });
+    openInline({ title: 'Harness — new note' });
   });
 
   reopenBtn.addEventListener('click', function () {
-    log('→ ink.open (reopen, ' + Math.round(lastDrawing.length / 1024) + 'kb)');
-    post({ noteId: 'recHARNESS1', drawing: lastDrawing, title: 'Harness — reopened', darkMode: false });
+    openInline({ title: 'Harness — reopened', drawing: lastDrawing });
   });
 
   document.getElementById('open-dark').addEventListener('click', function () {
-    log('→ ink.open (dark)');
-    post({ noteId: 'recHARNESS2', drawing: null, title: 'Harness — dark', darkMode: true });
+    openInline({ title: 'Harness — dark', dark: true });
   });
+
+  document.getElementById('open-modal').addEventListener('click', function () {
+    if (canvasOpen) {
+      log('a canvas is already open — the shell ignores a second open. Tap Finish first.');
+      return;
+    }
+    // The v1 payload, verbatim: no frame, no recoveryKey, no prefs. The absences are the point.
+    // No frame means full screen; no recoveryKey means the replies carry no session and the
+    // recovery copy falls back to the note id; no prefs means the v1 defaults, one-finger scroll
+    // and a free pinch. The shipped page never sends this, so this button is the only way the
+    // modal screen is still reachable at all.
+    log('→ ink.open (v1 full screen — no frame, no recoveryKey, no prefs)');
+    post('ink.open', {
+      noteId: 'recHARNESSV1',
+      drawing: lastDrawing,
+      title: 'Harness — v1 full screen',
+      darkMode: false
+    });
+    canvasOpen = true;
+  });
+
+  document.getElementById('undo').addEventListener('click', function () {
+    log('→ ink.undo');
+    post('ink.undo');
+  });
+
+  document.getElementById('redo').addEventListener('click', function () {
+    log('→ ink.redo');
+    post('ink.redo');
+  });
+
+  document.getElementById('hidden').addEventListener('click', function () {
+    // The canvas draws above web content always, so without this every dialog on the page opens
+    // underneath the paper. Pressing this with a canvas open should uncover the dashed rectangle.
+    var next = this.getAttribute('aria-pressed') !== 'true';
+    this.setAttribute('aria-pressed', next ? 'true' : 'false');
+    log('→ ink.hidden ' + next);
+    post('ink.hidden', { hidden: next });
+  });
+
+  document.getElementById('page-dark').addEventListener('click', function () {
+    // The only live pref the real page actually sends. Its light/dark toggle posts ink.prefs on
+    // its own effect, independent of the open — so a harness that only ever passed prefs INSIDE
+    // ink.open would leave the one field that changes mid-session untested, which is how a
+    // message ends up in the contract with nothing exercising it.
+    var next = this.getAttribute('aria-pressed') !== 'true';
+    this.setAttribute('aria-pressed', next ? 'true' : 'false');
+    log('→ ink.prefs { darkMode: ' + next + ' }');
+    post('ink.prefs', { darkMode: next });
+  });
+
+  document.getElementById('fullscreen').addEventListener('click', function () {
+    // No message of its own: the rectangle simply gets bigger and the ResizeObserver reports it
+    // as an ink.frame. Nothing is torn down and nothing is re-opened, which is why the strokes
+    // already on the paper survive the change — same paper, two sizes.
+    var next = this.getAttribute('aria-pressed') !== 'true';
+    this.setAttribute('aria-pressed', next ? 'true' : 'false');
+    document.body.classList.toggle('fs', next);
+  });
+
+  document.getElementById('clear').addEventListener('click', function () {
+    // The page's own Clear flow: this side has already deleted the record, so the shell blanks
+    // the canvas and must answer with NOTHING. A reply here would be a second delete.
+    log('→ ink.clearCanvas (expect no reply at all)');
+    lastDrawing = null;
+    reopenBtn.disabled = true;
+    pngEl.style.display = 'none';
+    post('ink.clearCanvas');
+  });
+
+  document.getElementById('finish').addEventListener('click', function () {
+    log('→ ink.finish (expect one ink.close)');
+    post('ink.finish');
+  });
+
+  // The real page sends this on pagehide as well as on unmount, because a navigation that never
+  // runs a cleanup is the case the flush exists for.
+  window.addEventListener('pagehide', function () { post('ink.finish'); });
 })();
 </script>
 </body>

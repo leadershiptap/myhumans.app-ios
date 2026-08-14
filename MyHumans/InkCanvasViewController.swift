@@ -45,11 +45,31 @@ final class InkCanvasViewController: UIViewController {
     let mode: Mode
     private let request: Bridge.OpenInkRequest
 
+    /// The note this canvas is writing into RIGHT NOW, which is not the same thing as the note
+    /// it opened on.
+    ///
+    /// A canvas outlives the record it started with: the page's own Clear deletes the note and
+    /// says so with `ink.clearCanvas`, and every stroke after that belongs to a note that does
+    /// not exist yet. Leaving the deleted id on the messages was not untidiness — the page drops
+    /// anything naming the note it just cleared, for the rest of that page's life, so every
+    /// autosave AND the closing flush were thrown away in silence with nothing on screen saying
+    /// so. The only thing that rescued the handwriting was the draft the page writes as it
+    /// unmounts: the save path was running on the backup.
+    ///
+    /// The session tag beside it stays `request.recoveryKey` throughout: that says which OPEN
+    /// this reply answers for, and a Clear does not end the open.
+    private var currentNoteId: String?
+
     /// What the on-device recovery copy is filed under. The web side's draft key when it sent
     /// one — scoped to the person and meeting, existing before the note does — else the note id.
     /// Keying by note id alone filed every brand-new note under one shared "unsaved" slot, and
     /// the next blank page ANYONE opened was offered another person's handwriting.
-    private var recoveryKey: String? { request.recoveryKey ?? request.noteId }
+    ///
+    /// Deliberately NOT derived from `currentNoteId`, which now goes nil on a Clear. The copy on
+    /// disk belongs to the writing session, not to the record: move the key mid-session and what
+    /// was already banked is stranded under a name nothing looks for again, while what follows
+    /// lands in the shared `__unsaved__` slot this key exists to keep handwriting out of.
+    private let recoveryKey: String?
 
     /// The tag stamped on every reply, identifying which open this canvas answers for.
     var session: String? { request.recoveryKey }
@@ -94,11 +114,34 @@ final class InkCanvasViewController: UIViewController {
     /// Guards against a drawing arriving that we then immediately overwrite with an empty one.
     private var hasAppeared = false
 
+    /// The drawing an unanswered recovery offer is holding, and the fact that one is on screen.
+    ///
+    /// It lives here rather than only inside the alert's Restore closure because the rest of this
+    /// screen has to be able to SEE that a question is outstanding. While the alert is up the
+    /// canvas is still showing the OLDER drawing the page sent — that is the whole reason there
+    /// was something to ask about — so anything that writes the canvas to disk in that window
+    /// destroys the very thing being offered. See `bankRecovery()`.
+    private var pendingRecovery: PKDrawing?
+
+    /// The coach was asked and said discard.
+    ///
+    /// A decision, not a deletion. Deleting the file alone could never hold: the file is derived
+    /// from the canvas, the canvas is untouched by a discard, and the next writer puts it
+    /// straight back. Released the first time the drawing changes, because from that moment
+    /// there is new handwriting worth protecting and it is not the handwriting that was thrown
+    /// away.
+    private var recoveryDeclined = false
+
     // MARK: - Init
 
     init(request: Bridge.OpenInkRequest, mode: Mode) {
         self.request = request
         self.mode = mode
+        // Seeded from the open and owned by the canvas from here on: `request` is a let, and the
+        // note it names can be deleted while this canvas stays up and keeps taking strokes.
+        self.currentNoteId = request.noteId
+        // Fixed for the canvas's life on purpose — see the property.
+        self.recoveryKey = request.recoveryKey ?? request.noteId
         self.pageDark = request.prefs?.darkMode ?? request.darkMode
         self.systemToolPicker = request.prefs?.systemToolPicker ?? (mode == .modal)
         super.init(nibName: nil, bundle: nil)
@@ -149,7 +192,7 @@ final class InkCanvasViewController: UIViewController {
                 // No alert over an embedded canvas: the page owns this failure. It gets the
                 // signal, swaps in its read-only picture, and this dead paper goes away —
                 // otherwise the coach is left a live-looking rectangle that eats every stroke.
-                delegate?.inkCanvasDidFailLoad(self, noteId: request.noteId)
+                delegate?.inkCanvasDidFailLoad(self, noteId: currentNoteId)
             } else {
                 presentLoadFailure()
             }
@@ -394,9 +437,11 @@ final class InkCanvasViewController: UIViewController {
         let width = CGFloat(max(0.5, min(200, tool.width)))
         switch tool.kind {
         case "eraser":
-            // Four times the pen. A one-to-one eraser has to trace a word to clear it, which is
-            // not what anyone reaches for an eraser to do.
-            // The page's own number for this slot — see NATIVE_TOOL_SIZES there.
+            // The page's own number for this slot — see `NATIVE_TOOL_SIZES` there. Derived from
+            // nothing on this side, which is the whole rule: the line that used to stand here
+            // said "four times the pen" for two releases after the multiplying stopped, and a
+            // squeeze that took the pen's width at its word shipped a 1.5pt eraser to a coach
+            // who then had to trace every word to clear it.
             let eraserWidth = width
             if #available(iOS 16.4, *) {
                 canvasView.tool = PKEraserTool(.bitmap, width: eraserWidth)
@@ -461,16 +506,32 @@ final class InkCanvasViewController: UIViewController {
     /// The width the current fit was computed for. Recomputing on every layout pass is what
     /// made this a loop.
     private var fittedWidth: CGFloat = 0
+    /// And the page width it was computed against. A fit is the ratio of the two, and watching
+    /// only the view's half of it is how the Restore case below slipped through.
+    private var fittedPageWidth: CGFloat = 0
 
     /// Setting `zoomScale` or `contentSize` triggers `layoutSubviews`, which called straight
-    /// back into here — a feedback loop that ran while the pen was on the glass. It now does
-    /// nothing at all unless the view's width has actually changed, which happens on rotation,
-    /// on entering or leaving fullscreen, and never during a stroke.
+    /// back into here — a feedback loop that ran while the pen was on the glass. So this still
+    /// does nothing unless one of the two numbers the fit is made of has actually moved.
+    ///
+    /// The view's width moves on rotation, on entering or leaving fullscreen, and never during a
+    /// stroke. `pageWidth` moves when a drawing arrives wider than the page, and the second of
+    /// those moments — tapping Restore on a recovery copy written before the fixed page width
+    /// existed — used to be swallowed here: the page got wider, the view did not, so the canvas
+    /// kept the fit for the narrower page and the restored handwriting ran off the right-hand
+    /// edge, with `lockZoom` pinning min and max to that stale fit so no pinch could reach it.
+    ///
+    /// Widening the guard cannot revive the loop. Both remembered values are written below
+    /// BEFORE anything that dirties layout, and layout has no way to move `pageWidth` in any
+    /// case: it is written only where a drawing arrives, never from `bounds`, `zoomScale` or
+    /// `contentSize`, and `growContentIfNeeded()` only ever reads it.
     private func applyZoomPolicy() {
         let width = view.bounds.width
         guard width > 0, pageWidth > 0 else { return }
-        guard abs(width - fittedWidth) > 0.5 || !appliedInitialFit else { return }
+        let sameFit = abs(width - fittedWidth) <= 0.5 && abs(pageWidth - fittedPageWidth) <= 0.5
+        guard !sameFit || !appliedInitialFit else { return }
         fittedWidth = width
+        fittedPageWidth = pageWidth
 
         let fit = width / pageWidth
         canvasView.minimumZoomScale = fit
@@ -495,11 +556,37 @@ final class InkCanvasViewController: UIViewController {
         )
     }
 
-    @objc private func persistForRecovery() {
-        // A screen that could not open its own note must not write a recovery copy of the blank
-        // page it is showing. That is the same overwrite `loadFailed` exists to prevent.
-        guard !loadFailed else { return }
+    /// The one door to the recovery file. Nothing on this screen writes it any other way.
+    ///
+    /// Three refusals, each of which was a real way to lose handwriting:
+    ///
+    ///   - `loadFailed` — a screen that could not open its own note must not write a recovery
+    ///     copy of the blank page it is showing. The same overwrite `loadFailed` exists to
+    ///     prevent.
+    ///   - `pendingRecovery` — an offer is up and unanswered, and the file IS what is being
+    ///     offered. The canvas is holding the OLDER drawing the page sent, so a write here
+    ///     replaces the offer with it — or deletes it, via `InkRecovery.save`'s empty branch,
+    ///     when the page sent nothing at all. The alert itself survives that, because it holds
+    ///     the recovered drawing in memory; what does not survive is iOS terminating the app
+    ///     while it is backgrounded. The next open then compares the page's drawing against a
+    ///     file that now holds the same thing, clears it silently, and the coach never learns
+    ///     there had been anything to put back.
+    ///   - `recoveryDeclined` — the coach saw the offer and said discard. Nothing has been
+    ///     written since, so the canvas holds exactly what the page sent and the page still has
+    ///     it: there is nothing here for a copy to be a net for, and re-deriving one would be
+    ///     answering the question on the coach's behalf.
+    ///
+    /// Neither of the last two weakens the rule that a finished session keeps its copy. They are
+    /// the two states in which the canvas is provably not carrying anything the page lacks.
+    private func bankRecovery() {
+        guard !loadFailed, pendingRecovery == nil, !recoveryDeclined else { return }
         InkRecovery.save(canvasView.drawing, noteId: recoveryKey)
+    }
+
+    /// Kept as its own method because it is a notification selector — `observeBackgrounding()`
+    /// registers it by name, and `#selector` will not resolve a call site that has been inlined.
+    @objc private func persistForRecovery() {
+        bankRecovery()
     }
 
     /// Offered, never applied silently.
@@ -509,12 +596,26 @@ final class InkCanvasViewController: UIViewController {
     /// already shows exactly what was recovered, there is nothing to ask about and the copy goes
     /// quietly.
     private func offerRecoveryIfNeeded() {
+        // Cleared on the way in, so every path out of here leaves it honest — including the two
+        // early returns below. `pendingRecovery` stops every writer on this screen, and this
+        // method is re-entered from "Keep it", where it is already set. One re-offer that finds
+        // nothing left to offer would strand the flag and switch crash protection off for the
+        // rest of the session: a returning copy traded for a losable one, which is worse.
+        pendingRecovery = nil
+
         guard let recovered = InkRecovery.load(noteId: recoveryKey) else { return }
 
         guard recovered.dataRepresentation() != canvasView.drawing.dataRepresentation() else {
             InkRecovery.clear(noteId: recoveryKey)
             return
         }
+
+        // Held on the controller from the moment the question goes up, not just captured by the
+        // Restore closure. A question nobody has answered yet is a state this whole screen has to
+        // respect — the app can be backgrounded and then killed by iOS, or the page can tear this
+        // canvas down, while the alert is on screen, and every one of those paths used to write
+        // the canvas over the copy the alert was offering.
+        pendingRecovery = recovered
 
         let alert = UIAlertController(
             title: "Unsaved handwriting found",
@@ -523,6 +624,16 @@ final class InkCanvasViewController: UIViewController {
         )
         alert.addAction(UIAlertAction(title: "Restore", style: .default) { [weak self] _ in
             guard let self else { return }
+            // Answered, so the writers are free again — and what they write from here is the
+            // drawing the coach just accepted, which is the same thing the file already holds.
+            // Cleared before the assignment below, because that assignment fires the drawing
+            // delegate and everything downstream of it expects the question to be settled.
+            //
+            // The strokes come from the closure's own copy, not from `pendingRecovery`. Reading
+            // them back through an optional would make Restore a silent no-op the day anything
+            // clears the flag first, and a Restore that does nothing is the one outcome this
+            // alert must never produce.
+            self.pendingRecovery = nil
             self.canvasView.drawing = recovered
             if !recovered.bounds.isNull {
                 self.pageWidth = max(self.pageWidth, recovered.bounds.maxX + 24)
@@ -553,7 +664,16 @@ final class InkCanvasViewController: UIViewController {
             // than silently dropping it — otherwise a mis-tap costs the note anyway.
             self?.offerRecoveryIfNeeded()
         })
-        alert.addAction(UIAlertAction(title: "Discard", style: .destructive) { _ in
+        alert.addAction(UIAlertAction(title: "Discard", style: .destructive) { [weak self] _ in
+            guard let self else { return }
+            // Record the DECISION, then delete the file. Deleting the file was all this used to
+            // do, and it did not survive the walk to the door: the page sends `ink.finish` on
+            // every unmount and `finishFromWeb` re-derives the copy from the canvas, so the
+            // thing just discarded came back from the same session. The flag is what makes
+            // Discard mean discard; it lifts the moment there is new handwriting, which is
+            // something the coach never asked to throw away.
+            self.recoveryDeclined = true
+            self.pendingRecovery = nil
             InkRecovery.clear(noteId: noteId)
         })
         present(alert, animated: true)
@@ -612,8 +732,7 @@ final class InkCanvasViewController: UIViewController {
     /// The shell is about to tear this canvas down outside the normal flows — the web content
     /// process died, or the page navigated away for real. Bank the ink first.
     func persistNow() {
-        guard !loadFailed else { return }
-        InkRecovery.save(canvasView.drawing, noteId: recoveryKey)
+        bankRecovery()
     }
 
     @objc private func toggleFingerDrawing() {
@@ -635,7 +754,7 @@ final class InkCanvasViewController: UIViewController {
             self.cancelAutosave()
             self.canvasView.drawing = PKDrawing()
             InkRecovery.clear(noteId: self.recoveryKey)
-            self.delegate?.inkCanvasDidDiscard(self, noteId: self.request.noteId)
+            self.delegate?.inkCanvasDidDiscard(self, noteId: self.currentNoteId)
             self.delegate?.inkCanvasDidFinish(self)
         })
         present(alert, animated: true)
@@ -644,13 +763,33 @@ final class InkCanvasViewController: UIViewController {
     /// The page already deleted the record through its own Clear flow — it asked its own
     /// question, and this canvas must not ask a second one or send anything back. Blank the
     /// page and drop the recovery copy so the deleted drawing cannot offer itself back.
+    ///
+    /// What the canvas is left as afterwards is a note that has never been saved, because that
+    /// is what it now is.
     func clearFromWeb() {
-        cancelAutosave()
         canvasView.drawing = PKDrawing()
         InkRecovery.clear(noteId: recoveryKey)
         // And the undo stack. Leaving it meant one Undo resurrected the deleted drawing, and
         // the autosave that followed committed it into a brand-new note.
         canvasView.undoManager?.removeAllActions()
+        // And the note's identity. The record is gone, so anything written from here belongs to a
+        // note that does not exist yet — and the page refuses every message that names the one it
+        // just deleted, silently, for the rest of that page's life. Writing on after a Clear
+        // therefore reached the server through no live path at all, with the status line showing
+        // nothing wrong. Nil is simply the truth, and it is what a blank new note sends anyway.
+        //
+        // `recoveryKey` deliberately does not follow this — see its declaration.
+        currentNoteId = nil
+        // Back onto the first-save path, because a first save is what the next one is. The page
+        // will not mint a record without a picture, and `emit` only renders one while this is
+        // false — left set, every autosave after a Clear crossed with an empty PNG and was turned
+        // away with "Could not render the handwriting yet". It also restores the short idle fuse,
+        // so "write two words and walk away" is as safe on this note as it was on the first.
+        hasSavedOnce = false
+        // LAST, not first. Assigning `drawing` above calls back into `canvasViewDrawingDidChange`,
+        // which re-arms both timers — so cancelling on the way in left the deleted note's clocks
+        // running over a blank page. Nothing between here and there can fire in the meantime.
+        cancelAutosave()
     }
 
     @objc private func handleDone() {
@@ -672,9 +811,19 @@ final class InkCanvasViewController: UIViewController {
     /// confirm it arrived — so the on-device copy stays as the net. The next open of this note
     /// compares and quietly discards it when the page already has everything, which is the
     /// mechanism that was device-tested on day one.
+    ///
+    /// The keep goes through `bankRecovery()`, which is that same net minus the two states where
+    /// the canvas is provably carrying nothing the page lacks. This is the line that would
+    /// otherwise re-derive a copy the coach had just discarded: the page sends `ink.finish` on
+    /// every unmount, and the take-notes effect re-runs on a meeting or category change, so the
+    /// round trip can happen within seconds of the alert. Today the reconcile on the next open
+    /// usually catches that — the file and the page hold the same drawing — but "usually" is
+    /// resting on `dataRepresentation()` being byte-stable across a decode, which nothing here
+    /// establishes. A session that wrote so much as one stroke still leaves its copy behind,
+    /// because a stroke is what lifts the decline.
     func finishFromWeb() {
         cancelAutosave()
-        if !loadFailed { InkRecovery.save(canvasView.drawing, noteId: recoveryKey) }
+        bankRecovery()
         emit(.inkClose)
         delegate?.inkCanvasDidFinish(self)
     }
@@ -791,14 +940,17 @@ final class InkCanvasViewController: UIViewController {
         hasSavedOnce = true
 
         // Written before the message goes out rather than after: if anything downstream of here
-        // fails, the strokes are still on disk.
-        InkRecovery.save(drawing, noteId: recoveryKey)
+        // fails, the strokes are still on disk. Through the one door not because this call can
+        // reach an unanswered offer — no timer can be armed while a modal alert is eating the
+        // strokes that would arm it — but because a single direct `InkRecovery.save` left on the
+        // write path is how the invariant stops being one.
+        bankRecovery()
 
         delegate?.inkCanvas(
             self,
             didProduce: Bridge.InkResult(
                 session: request.recoveryKey,
-                noteId: request.noteId,
+                noteId: currentNoteId,
                 drawing: drawing.dataRepresentation().base64EncodedString(),
                 png: png,
                 isEmpty: false
@@ -822,7 +974,7 @@ final class InkCanvasViewController: UIViewController {
         else {
             delegate?.inkCanvas(
                 self,
-                didProduce: .empty(session: request.recoveryKey, noteId: request.noteId),
+                didProduce: .empty(session: request.recoveryKey, noteId: currentNoteId),
                 as: .inkClose
             )
             return
@@ -834,7 +986,7 @@ final class InkCanvasViewController: UIViewController {
     private func result(for drawing: PKDrawing, png: Data) -> Bridge.InkResult {
         Bridge.InkResult(
             session: request.recoveryKey,
-            noteId: request.noteId,
+            noteId: currentNoteId,
             drawing: drawing.dataRepresentation().base64EncodedString(),
             png: png.base64EncodedString(),
             isEmpty: false
@@ -890,6 +1042,11 @@ extension InkCanvasViewController: PKCanvasViewDelegate {
 
     func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
         guard hasAppeared else { return }
+        // A discard was a decision about the copy that was on disk, not a standing instruction to
+        // stop protecting this note. New handwriting is new handwriting: it is not the thing that
+        // was thrown away, nobody has been asked about it, and it deserves the same net as any
+        // other session's.
+        recoveryDeclined = false
         scheduleAutosave()
     }
 

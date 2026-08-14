@@ -59,6 +59,9 @@ final class InkCanvasViewController: UIViewController {
     private var twoFingerScroll = true
     private var lockZoom = true
     private var pageDark: Bool
+    /// Apple's floating palette. Off inline — it is a separate system window roughly 748x122pt
+    /// with no size API, so over an embedded canvas it covers the page's own chrome.
+    private var systemToolPicker: Bool
 
     /// The page's width in CONTENT units. At least `Config.inkPageWidth`; wider only when an
     /// incoming drawing already has strokes beyond it, because clipping those visually — even
@@ -83,6 +86,7 @@ final class InkCanvasViewController: UIViewController {
         self.request = request
         self.mode = mode
         self.pageDark = request.prefs?.darkMode ?? request.darkMode
+        self.systemToolPicker = request.prefs?.systemToolPicker ?? (mode == .modal)
         super.init(nibName: nil, bundle: nil)
         if mode == .modal { modalPresentationStyle = .fullScreen }
         if let prefs = request.prefs {
@@ -119,11 +123,12 @@ final class InkCanvasViewController: UIViewController {
 
         // The tool picker needs a first responder that is already in a window, so this cannot
         // move into viewDidLoad.
-        let picker = PKToolPicker()
-        picker.addObserver(canvasView)
-        picker.setVisible(true, forFirstResponder: canvasView)
         canvasView.becomeFirstResponder()
-        toolPicker = picker
+        applySystemToolPicker()
+        // PencilKit derives the scroll pan's touch count from `drawingPolicy` and rewrites it
+        // whenever it reconfigures its input pipeline — attaching a picker and taking first
+        // responder are both such moments. Re-assert after them, not only before.
+        applyScrollPolicy()
 
         if loadFailed {
             if mode == .inline {
@@ -141,6 +146,9 @@ final class InkCanvasViewController: UIViewController {
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        // PencilKit rewrites the pan's touch count whenever it reconfigures; layout runs after
+        // every such point, including each inline frame change.
+        applyScrollPolicy()
         applyZoomPolicy()
         growContentIfNeeded()
     }
@@ -269,6 +277,10 @@ final class InkCanvasViewController: UIViewController {
     func apply(_ prefs: Bridge.InkPrefs) {
         if let twoFinger = prefs.twoFingerScroll { twoFingerScroll = twoFinger }
         if let lock = prefs.lockZoom { lockZoom = lock }
+        if let showPicker = prefs.systemToolPicker, showPicker != systemToolPicker {
+            systemToolPicker = showPicker
+            applySystemToolPicker()
+        }
         if let dark = prefs.darkMode, dark != pageDark {
             pageDark = dark
             overrideUserInterfaceStyle = dark ? .dark : .light
@@ -277,6 +289,35 @@ final class InkCanvasViewController: UIViewController {
         }
         applyScrollPolicy()
         applyZoomPolicy()
+    }
+
+    /// Apple's palette, on demand only.
+    private func applySystemToolPicker() {
+        guard hasAppeared else { return }
+        if systemToolPicker {
+            let picker = toolPicker ?? PKToolPicker()
+            picker.addObserver(canvasView)
+            picker.setVisible(true, forFirstResponder: canvasView)
+            toolPicker = picker
+        } else {
+            toolPicker?.setVisible(false, forFirstResponder: canvasView)
+            toolPicker = nil
+        }
+    }
+
+    /// What the page's own tool row picked.
+    func apply(tool: Bridge.InkTool) {
+        let width = CGFloat(max(1, min(64, tool.width)))
+        switch tool.kind {
+        case "eraser":
+            canvasView.tool = PKEraserTool(.bitmap)
+        case "marker":
+            canvasView.tool = PKInkingTool(.marker, color: UIColor(hex: tool.color), width: width)
+        default:
+            canvasView.tool = PKInkingTool(.pen, color: UIColor(hex: tool.color), width: width)
+        }
+        // Assigning a tool re-resolves the input pipeline, which resets the pan touch count.
+        applyScrollPolicy()
     }
 
     /// Two-finger-only scrolling stops a resting finger moving the page — the same class of
@@ -432,8 +473,11 @@ final class InkCanvasViewController: UIViewController {
     /// Called by the shell whenever the canvas should own input again — a frame update, a
     /// preference change — and cheap to call when it already does.
     func reassertInput() {
-        guard hasAppeared, !canvasView.isFirstResponder else { return }
-        canvasView.becomeFirstResponder()
+        guard hasAppeared else { return }
+        if !canvasView.isFirstResponder { canvasView.becomeFirstResponder() }
+        // Unconditional: taking first responder re-resolves PencilKit's input pipeline and
+        // resets the pan touch count, so the two must never be separated.
+        applyScrollPolicy()
     }
 
     /// The shell is about to tear this canvas down outside the normal flows — the web content
@@ -445,6 +489,9 @@ final class InkCanvasViewController: UIViewController {
 
     @objc private func toggleFingerDrawing() {
         canvasView.drawingPolicy = canvasView.drawingPolicy == .pencilOnly ? .anyInput : .pencilOnly
+        // `drawingPolicy` is where PencilKit derives the pan touch count from, so any
+        // assignment to it must be followed by this.
+        applyScrollPolicy()
     }
 
     @objc private func handleClear() {
@@ -664,7 +711,18 @@ extension InkCanvasViewController: PKCanvasViewDelegate {
 
     func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
         guard hasAppeared else { return }
-        growContentIfNeeded()
         scheduleAutosave()
+    }
+
+    /// The page grows on pen-lift, not per stroke.
+    ///
+    /// `contentSize` is not an independent property once the canvas is zoomed — the scroll view
+    /// derives it from the zoomed content view, and PencilKit re-tiles its ink renderer against
+    /// it. Writing it mid-stroke made two owners fight over the same value on every drawing
+    /// change, and reading `drawing.bounds` to compute it unions every stroke in the note, on
+    /// every stroke. Both belong at the one moment the answer can have meaningfully changed.
+    func canvasViewDidEndUsingTool(_ canvasView: PKCanvasView) {
+        guard hasAppeared else { return }
+        growContentIfNeeded()
     }
 }

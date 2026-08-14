@@ -232,6 +232,8 @@ extension WebShellViewController: WKScriptMessageHandler {
         case .setPrefs(let prefs):
             inkController?.apply(prefs)
             inkController?.reassertInput()
+        case .setTool(let tool):
+            inkController?.apply(tool: tool)
         case .undo:
             inkController?.undoFromWeb()
         case .redo:

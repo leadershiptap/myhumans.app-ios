@@ -85,14 +85,19 @@ for this to be a separate repo while the web app ships independently.
 **Injected at document start**, before any page script runs:
 
 ```js
-window.__myhumansNative = { version: 1, caps: ['ink'] }
+window.__myhumansNative = { version: 2, caps: ['ink', 'ink-inline'] }
 ```
 
 **Web → native**, via `window.webkit.messageHandlers.myhumans.postMessage({ name, payload })`:
 
 | Message | Payload |
 |---|---|
-| `ink.open` | `{ noteId, drawing: base64 \| null, title, darkMode }` |
+| `ink.open` | `{ noteId, drawing: base64 \| null, title, darkMode, frame?, prefs? }` — with `frame` the canvas embeds in the page at that rect; without it, full screen (the v1 behaviour) |
+| `ink.frame` | `{ frame }` — the page laid out again; move the inline canvas |
+| `ink.prefs` | `{ twoFingerScroll?, lockZoom?, darkMode? }` — live settings changes |
+| `ink.undo` / `ink.redo` | `{}` — the page's own buttons |
+| `ink.finish` | `{}` — page is done with the canvas; shell flushes (`ink.close`) and tears down |
+| `ink.clearCanvas` | `{}` — page already deleted the note; blank the canvas, reply with nothing |
 
 **Native → web**, via `window.__myhumansNativeEmit(name, base64OfJSON)`:
 
@@ -169,9 +174,5 @@ change is needed for the drawing either — `updateInkNoteFields` and `compressS
 | `MyHumans/Config.swift` | What to load, timings, export limits |
 | `MyHumans/AppDelegate.swift` | Entry point |
 | `MyHumans/Resources/harness.html` | The stub take-notes page, for developing without the web repo |
-| `web/bridge.ts` | The web half of the contract. **Moves to `lib/native/bridge.ts` at bolt-on** |
-| `web/bridge.test.ts` | Its Vitest suite — 12 tests, the only part verifiable without an iPad |
+| *(moved)* | The bridge's TypeScript half lives in `lib/native/` in the `myhumansapp` repo, tests included — it moved at bolt-on (that repo's PR #254) and the `web/` folder here was deleted |
 
-`web/` is TypeScript living in a Swift repo on purpose: the two halves of the contract are
-designed together, so the bolt-on is a file move rather than a rewrite. Run its tests with
-`npx vitest run --root web --environment node`. Delete the folder once it has moved.

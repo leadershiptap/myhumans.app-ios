@@ -31,6 +31,12 @@ final class WebShellViewController: UIViewController {
     private var webView: WKWebView!
     private var inkController: InkCanvasViewController?
 
+    /// The inline canvas's rectangle as the PAGE reported it, in CSS pixels. Kept so the view
+    /// frame can be re-derived when the web view scrolls underneath it — the keyboard avoiding
+    /// a focused field is the common case — without asking the page to re-measure.
+    private var inlineCSSRect: CGRect?
+    private var scrollObservation: NSKeyValueObservation?
+
     /// Auth pop-ups (Microsoft sign-in among them) open via window.open, which WKWebView
     /// surfaces as a request for a new web view. Refusing it shows the coach a button that does
     /// nothing, so a child view is presented and closed when the flow finishes.
@@ -82,6 +88,13 @@ final class WebShellViewController: UIViewController {
         webView.uiDelegate = self
         webView.allowsBackForwardNavigationGestures = true
         webView.scrollView.contentInsetAdjustmentBehavior = .automatic
+        // The inline canvas is positioned from CSS coordinates, and those live in the scroll
+        // view's content space. Whenever WebKit moves that space — keyboard avoidance, the
+        // automatic safe-area inset, a programmatic scroll — the canvas must move with it or
+        // it visibly detaches from the page it is pretending to be part of.
+        scrollObservation = webView.scrollView.observe(\.contentOffset) { [weak self] _, _ in
+            self?.placeInlineInk()
+        }
         #if DEBUG
         if #available(iOS 16.4, *) { webView.isInspectable = true }
         #endif
@@ -127,13 +140,58 @@ final class WebShellViewController: UIViewController {
     private func presentInk(_ request: Bridge.OpenInkRequest) {
         guard inkController == nil else { return }
 
-        let ink = InkCanvasViewController(request: request)
+        // A frame means the v2 web app wants the canvas IN the page, beside the person's
+        // details. No frame is the v1 contract: a modal screen with its own bar.
+        if let frame = request.frame {
+            let ink = InkCanvasViewController(request: request, mode: .inline)
+            ink.delegate = self
+            inkController = ink
+
+            addChild(ink)
+            inlineCSSRect = frame
+            ink.view.frame = viewFrame(forCSSRect: frame)
+            // Above the web view, which stays interactive everywhere else — the page renders
+            // the buttons, this rectangle is only the paper.
+            view.addSubview(ink.view)
+            ink.didMove(toParent: self)
+            return
+        }
+
+        let ink = InkCanvasViewController(request: request, mode: .modal)
         ink.delegate = self
         inkController = ink
 
         let nav = UINavigationController(rootViewController: ink)
+        // The asset-catalog accent does not reliably reach a modally presented bar, and the
+        // default systemBlue reads as off-brand next to the app's navy. Named colour, so the
+        // dark variant still applies.
+        nav.navigationBar.tintColor = UIColor(named: "AccentColor")
         nav.modalPresentationStyle = .fullScreen
         present(nav, animated: true)
+    }
+
+    private func tearDownInlineInk(_ ink: InkCanvasViewController) {
+        inlineCSSRect = nil
+        ink.willMove(toParent: nil)
+        ink.view.removeFromSuperview()
+        ink.removeFromParent()
+    }
+
+    /// CSS pixels → this view's points.
+    ///
+    /// A CSS point is a coordinate in the scroll view's CONTENT space, and the content sits at
+    /// `-contentOffset` in the view. With the automatic safe-area inset the resting offset is
+    /// `-adjustedContentInset.top`, so trusting the raw rect placed the canvas one status bar
+    /// too high — over the strip's own buttons. Subtracting the live offset handles the resting
+    /// case, the keyboard case and any programmatic scroll with one formula.
+    private func viewFrame(forCSSRect rect: CGRect) -> CGRect {
+        let offset = webView.scrollView.contentOffset
+        return rect.offsetBy(dx: -offset.x, dy: -offset.y)
+    }
+
+    private func placeInlineInk() {
+        guard let rect = inlineCSSRect, let ink = inkController, ink.mode == .inline else { return }
+        ink.view.frame = viewFrame(forCSSRect: rect)
     }
 }
 
@@ -159,6 +217,29 @@ extension WebShellViewController: WKScriptMessageHandler {
         switch inbound {
         case .openInk(let request):
             presentInk(request)
+        case .setFrame(let frame):
+            // Layout changed under the inline canvas — fullscreen toggled, sidebar collapsed,
+            // rotation. Unanimated: the page's own layout change isn't animated either, and a
+            // lagging canvas visibly detaches from the page around it.
+            inlineCSSRect = frame
+            placeInlineInk()
+            inkController?.reassertInput()
+        case .setHidden(let hidden):
+            // A web dialog needs the screen. The canvas always draws above web content, so
+            // without this every dialog on the take-notes screen opened underneath the paper.
+            inkController?.view.isHidden = hidden
+            if !hidden { inkController?.reassertInput() }
+        case .setPrefs(let prefs):
+            inkController?.apply(prefs)
+            inkController?.reassertInput()
+        case .undo:
+            inkController?.undoFromWeb()
+        case .redo:
+            inkController?.redoFromWeb()
+        case .finish:
+            inkController?.finishFromWeb()
+        case .clearCanvas:
+            inkController?.clearFromWeb()
         }
     }
 }
@@ -176,13 +257,26 @@ extension WebShellViewController: InkCanvasViewControllerDelegate {
     }
 
     func inkCanvasDidDiscard(_ controller: InkCanvasViewController, noteId: String?) {
-        emit(.inkDiscard, payload: Bridge.InkDiscard(noteId: noteId))
+        emit(.inkDiscard, payload: Bridge.InkDiscard(session: controller.session, noteId: noteId))
+    }
+
+    func inkCanvasDidFailLoad(_ controller: InkCanvasViewController, noteId: String?) {
+        // Tell the page so it can fall back to its read-only picture, then take the dead
+        // canvas away. An older page ignores the unknown name — rule 2.
+        emit(.inkLoadFailed, payload: Bridge.InkLoadFailed(session: controller.session, noteId: noteId))
+        inkCanvasDidFinish(controller)
     }
 
     func inkCanvasDidFinish(_ controller: InkCanvasViewController) {
-        // Dismissed from here rather than from the ink controller: it sits inside a navigation
-        // controller, so it is not itself the presented view controller, and this shell is.
-        dismiss(animated: true)
+        switch controller.mode {
+        case .inline:
+            tearDownInlineInk(controller)
+        case .modal:
+            // Dismissed from here rather than from the ink controller: it sits inside a
+            // navigation controller, so it is not itself the presented view controller, and
+            // this shell is.
+            dismiss(animated: true)
+        }
         inkController = nil
     }
 }
@@ -201,6 +295,16 @@ extension WebShellViewController: WKNavigationDelegate {
             return
         }
 
+        // A real navigation replaces the document, and the SPA's ink.finish never fires for
+        // one — the page that would send it is being torn down by WebKit itself. Same story
+        // as process death: bank the ink, remove the canvas, let the new page start clean.
+        if navigationAction.targetFrame?.isMainFrame == true,
+           let ink = inkController, ink.mode == .inline {
+            ink.persistNow()
+            tearDownInlineInk(ink)
+            inkController = nil
+        }
+
         // mailto: (the celebration email is a real <a href>) and tel: belong to the system.
         if let scheme = url.scheme, ["mailto", "tel", "facetime", "sms"].contains(scheme) {
             UIApplication.shared.open(url)
@@ -209,6 +313,24 @@ extension WebShellViewController: WKNavigationDelegate {
         }
 
         decisionHandler(.allow)
+    }
+}
+
+// MARK: - Process death and real navigation
+
+extension WebShellViewController {
+
+    /// WebKit's content process died — low memory, a renderer crash. The page is gone, but the
+    /// native canvas would keep floating over the blank web view, eating strokes for a page
+    /// that no longer exists. Bank the ink, tear down, reload; the recovery offer on the next
+    /// open is the mechanism that was device-tested on day one.
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        if let ink = inkController {
+            ink.persistNow()
+            if ink.mode == .inline { tearDownInlineInk(ink) } else { dismiss(animated: false) }
+            inkController = nil
+        }
+        webView.reload()
     }
 }
 

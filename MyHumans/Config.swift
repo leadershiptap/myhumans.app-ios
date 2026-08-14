@@ -16,12 +16,16 @@ enum Config {
         case harness
     }
 
-    /// Flip this while working on the ink screen.
+    /// Flip this to `.harness` while working on the ink screen itself.
+    ///
+    /// It shipped as `.harness` while the web app had never heard of this shell. That ended on
+    /// 13 Aug 2026: the bolt-on is merged and deployed, so the real app now opens the native
+    /// canvas and the harness is a development tool rather than the only page that works.
     ///
     /// There is deliberately no in-app switch. A debug toggle is one more thing that can be left
     /// in the wrong position and ship, and this is a two-character edit followed by a rebuild
     /// that takes seconds.
-    static let startTarget: StartTarget = .harness
+    static let startTarget: StartTarget = .liveApp
 
     /// The deployed app. Note there is no localhost option and there cannot usefully be one:
     /// Clerk's production keys only resolve `myhumans.app`, so no authenticated page renders
@@ -38,6 +42,18 @@ enum Config {
     /// JavaScript, and the web side then applies its own commit schedule on top. Sending sooner
     /// costs nothing and shortens the window in which a force-quit loses strokes.
     static let autosaveIdleSeconds: TimeInterval = 1.5
+
+    /// Ceiling on how long continuous writing can postpone an autosave. The idle debounce alone
+    /// never fires for a coach writing steadily with sub-1.5s stroke gaps, and everything behind
+    /// the bridge is only as fresh as the last message — so without a ceiling, an abrupt exit
+    /// mid-flow could owe minutes of ink instead of seconds.
+    static let autosaveMaxSeconds: TimeInterval = 8
+
+    /// The writing page's width in content units, shared by the inline and fullscreen sizes of
+    /// the canvas so they are one piece of paper at two magnifications. If the two sizes each
+    /// used their own width, strokes written at the wide one would clip at the narrow one — data
+    /// intact, but handwriting the coach can no longer see reads as handwriting lost.
+    static let inkPageWidth: CGFloat = 1024
 
     /// Scale factor for the exported PNG, matching the web canvas's `pixelRatio: 2`.
     static let exportScale: CGFloat = 2

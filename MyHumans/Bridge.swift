@@ -82,6 +82,14 @@ extension Bridge {
         /// Live preference change from the page's canvas-settings menu.
         case setPrefs(InkPrefs)
 
+        /// Pen, highlighter or eraser, chosen in the page's own compact tool row.
+        ///
+        /// `PKToolPicker` has no size, frame or presentation API and lives in a separate system
+        /// window ~748x122pt, so it cannot be shrunk, clipped or contained — over an embedded
+        /// canvas it covers the page's own chrome. The page draws the controls instead and
+        /// tells the canvas what was picked.
+        case setTool(InkTool)
+
         /// The page's own undo/redo buttons. Routed to the canvas's undo manager, the same
         /// one the modal nav-bar buttons use.
         case undo
@@ -111,6 +119,8 @@ extension Bridge {
                 self = .setFrame(frame)
             case "ink.prefs":
                 self = .setPrefs(InkPrefs(dict))
+            case "ink.tool":
+                self = .setTool(InkTool(dict))
             case "ink.undo":
                 self = .undo
             case "ink.redo":
@@ -187,6 +197,22 @@ extension Bridge {
         }
     }
 
+    /// What to draw with. Mirrors the web toolbar's own model.
+    struct InkTool {
+        /// `pen`, `marker` or `eraser`. Anything else is treated as a pen rather than refused —
+        /// a newer page must not be able to leave the coach with no tool at all.
+        let kind: String
+        /// `#rrggbb`. Ignored by the eraser.
+        let color: String
+        let width: Double
+
+        init(_ dict: [String: Any]) {
+            kind = (dict["kind"] as? String) ?? "pen"
+            color = (dict["color"] as? String) ?? "#0f172a"
+            width = (dict["width"] as? Double) ?? 3
+        }
+    }
+
     /// Coach preferences for the canvas, chosen in the page's settings menu and persisted by
     /// the web side (they are per-device concerns, and the web side already has per-device
     /// storage). Every field optional so a partial update touches only what it names.
@@ -197,11 +223,15 @@ extension Bridge {
         let lockZoom: Bool?
         /// Overrides the page colour independently of the app theme. Nil = keep.
         let darkMode: Bool?
+        /// Show Apple's floating tool palette. Off by default on the embedded canvas, where it
+        /// is bigger than the page area it floats over.
+        let systemToolPicker: Bool?
 
         init(_ dict: [String: Any]) {
             twoFingerScroll = dict["twoFingerScroll"] as? Bool
             lockZoom = dict["lockZoom"] as? Bool
             darkMode = dict["darkMode"] as? Bool
+            systemToolPicker = dict["systemToolPicker"] as? Bool
         }
     }
 }

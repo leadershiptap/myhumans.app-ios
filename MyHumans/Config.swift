@@ -1,5 +1,25 @@
 import CoreGraphics
 import Foundation
+import UIKit
+
+extension UIColor {
+    /// `#rrggbb` from the web toolbar. Falls back to near-black rather than failing: a coach
+    /// mid-sentence needs a pen more than they need a correct shade.
+    convenience init(hex: String) {
+        var value: UInt64 = 0
+        let cleaned = hex.hasPrefix("#") ? String(hex.dropFirst()) : hex
+        guard cleaned.count == 6, Scanner(string: cleaned).scanHexInt64(&value) else {
+            self.init(red: 0x0f / 255, green: 0x17 / 255, blue: 0x2a / 255, alpha: 1)
+            return
+        }
+        self.init(
+            red: CGFloat((value & 0xFF0000) >> 16) / 255,
+            green: CGFloat((value & 0x00FF00) >> 8) / 255,
+            blue: CGFloat(value & 0x0000FF) / 255,
+            alpha: 1
+        )
+    }
+}
 
 enum Config {
 

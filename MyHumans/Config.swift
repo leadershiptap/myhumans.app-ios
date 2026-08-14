@@ -80,23 +80,20 @@ enum Config {
     /// The eraser and the highlighter are multiples of the chosen pen width, so picking a pen
     /// width sets all three tools at once and switching between them needs no second thought.
     ///
-    /// Large multiples on purpose, and these are the third calibration — each one from Josh
-    /// writing with the previous. A highlighter has to be several times the text it marks or it
-    /// reads as a second pen, and an eraser at anything near pen width has to TRACE a word to
-    /// clear it, which is not what anyone reaches for an eraser to do.
+    /// The three tools as ratios of one another: pen 1, highlighter 2.5, eraser 5.
     ///
-    /// They also carry the EQUIVALENCE between the three tools, which is why the tool row can
-    /// keep one width slot per tool and never need translating: at the same slot, each tool is
-    /// already the size that goes with the others. Josh's calibration was that the highlighter
-    /// wanted about half again what it had, and the eraser three times — at the finest pen
-    /// (1pt) that is a 22.5pt highlighter and a 60pt eraser.
-    static let eraserWidthMultiplier: CGFloat = 60
-    static let highlighterWidthMultiplier: CGFloat = 22.5
-
-    /// Ceiling on the eraser, independent of the pen it is scaled from. The multiple alone
-    /// reaches ~300pt at the widest pen — about a third of the page — which stops being an
-    /// eraser and starts being a way to lose a paragraph in one pass.
-    static let eraserMaxWidth: CGFloat = 140
+    /// Josh's numbers, and small ones on purpose. The previous attempt used large absolute
+    /// multiples (22.5 and 60) and they did not survive contact with PencilKit: every ink type
+    /// has its own `validWidthRange` and anything past it is silently pinned to the end, so the
+    /// four eraser slots all collapsed onto one width and the highlighter came out the size of
+    /// the pen. Ratios in this range sit inside what every ink actually allows, which is what
+    /// makes the four slots stay four distinct sizes.
+    ///
+    /// They also carry the EQUIVALENCE between the tools, which is what lets the page keep one
+    /// width slot per tool and never translate between them: at the same slot, each tool is
+    /// already the size that goes with the others.
+    static let eraserWidthMultiplier: CGFloat = 5
+    static let highlighterWidthMultiplier: CGFloat = 2.5
 
     /// Highlighter colour and opacity — a marker laid over words has to leave them readable.
     static let highlighterAlpha: CGFloat = 0.25

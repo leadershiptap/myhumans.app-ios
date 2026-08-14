@@ -9,6 +9,8 @@ protocol InkCanvasViewControllerDelegate: AnyObject {
         as message: Bridge.OutboundMessage
     )
     func inkCanvasDidDiscard(_ controller: InkCanvasViewController, noteId: String?)
+    /// The Pencil's own gesture changed tools; the page's toolbar needs to agree.
+    func inkCanvas(_ controller: InkCanvasViewController, didSwitchToolTo kind: String)
     /// The incoming drawing would not decode and the canvas refused to open over it.
     func inkCanvasDidFailLoad(_ controller: InkCanvasViewController, noteId: String?)
     func inkCanvasDidFinish(_ controller: InkCanvasViewController)
@@ -51,6 +53,11 @@ final class InkCanvasViewController: UIViewController {
 
     /// The tag stamped on every reply, identifying which open this canvas answers for.
     var session: String? { request.recoveryKey }
+
+    /// What the page's tool row last asked for, and what a squeeze toggles back to. The Pencil's
+    /// gesture is a TOGGLE, so it has to remember what it toggled away from.
+    private var currentTool = Bridge.InkTool(["kind": "pen", "color": "#0f172a", "width": 1.8])
+    private var toolBeforeEraser: Bridge.InkTool?
     private let canvasView = PKCanvasView()
     private var toolPicker: PKToolPicker?
     private var autosaveTimer: Timer?
@@ -177,6 +184,7 @@ final class InkCanvasViewController: UIViewController {
         canvasView.showsHorizontalScrollIndicator = false
 
         applyScrollPolicy()
+        configurePencilGestures()
         // Start on the same tool the page's row shows as selected, so the first stroke matches
         // the highlighted button rather than whatever PencilKit last remembered.
         apply(tool: Bridge.InkTool(["kind": "pen", "color": "#0f172a", "width": 1.8]))
@@ -294,6 +302,34 @@ final class InkCanvasViewController: UIViewController {
         applyZoomPolicy()
     }
 
+    /// The Pencil's own barrel gestures — double-tap, and squeeze on a Pencil Pro.
+    ///
+    /// PencilKit wires these up itself ONLY through `PKToolPicker`, and this canvas hides the
+    /// picker because it cannot be sized to fit the page. So the interaction is installed
+    /// directly, and the gesture toggles the same tools the page's row does.
+    private func configurePencilGestures() {
+        let interaction = UIPencilInteraction()
+        interaction.delegate = self
+        canvasView.addInteraction(interaction)
+    }
+
+    /// Eraser ↔ whatever was in hand before it. The classic double-tap behaviour, kept for the
+    /// squeeze too because it is the one people reach for mid-sentence.
+    fileprivate func togglePencilTool() {
+        let next: Bridge.InkTool
+        if currentTool.kind == "eraser" {
+            next = toolBeforeEraser ?? Bridge.InkTool(["kind": "pen", "color": "#0f172a", "width": 1.8])
+        } else {
+            next = Bridge.InkTool([
+                "kind": "eraser", "color": currentTool.color, "width": currentTool.width,
+            ])
+        }
+        apply(tool: next)
+        // The page's row has to agree, or the gesture silently desynchronises the toolbar from
+        // the tool actually in hand and the row is what looks broken.
+        delegate?.inkCanvas(self, didSwitchToolTo: next.kind)
+    }
+
     /// Apple's palette, on demand only.
     private func applySystemToolPicker() {
         guard hasAppeared else { return }
@@ -321,6 +357,8 @@ final class InkCanvasViewController: UIViewController {
 
     /// What the page's own tool row picked.
     func apply(tool: Bridge.InkTool) {
+        currentTool = tool
+        if tool.kind != "eraser" { toolBeforeEraser = tool }
         let width = CGFloat(max(0.5, min(64, tool.width)))
         switch tool.kind {
         case "eraser":
@@ -340,11 +378,27 @@ final class InkCanvasViewController: UIViewController {
             // A highlighter is yellow and see-through, and wider than the words it marks —
             // otherwise it is just a second pen. The colour is the tool's, not the palette's:
             // picking "red highlighter" is not a thing anyone means.
-            canvasView.tool = PKInkingTool(
-                .marker,
-                color: UIColor(hex: "#FDE047").withAlphaComponent(Config.highlighterAlpha),
-                width: clamped(width * Config.highlighterWidthMultiplier, for: .marker)
-            )
+            // `.monoline`, not `.marker`. A real marker responds to how the Pencil is HELD —
+            // edge-on lays a wider band than point-on, which is exactly how a felt tip behaves
+            // and exactly what Josh does not want. Monoline is a constant-width ink, so the
+            // highlighter is now the width the toolbar says and nothing else, and the
+            // translucent yellow does the rest of the work.
+            let highlighterWidth = width * Config.highlighterWidthMultiplier
+            let highlighterColour = UIColor(hex: "#FDE047")
+                .withAlphaComponent(Config.highlighterAlpha)
+            if #available(iOS 17.0, *) {
+                canvasView.tool = PKInkingTool(
+                    .monoline,
+                    color: highlighterColour,
+                    width: clamped(highlighterWidth, for: .monoline)
+                )
+            } else {
+                canvasView.tool = PKInkingTool(
+                    .marker,
+                    color: highlighterColour,
+                    width: clamped(highlighterWidth, for: .marker)
+                )
+            }
 
         default:
             // Constant width, no pressure response. Josh: whatever the tool says is what should
@@ -821,5 +875,42 @@ extension InkCanvasViewController: PKCanvasViewDelegate {
     func canvasViewDidEndUsingTool(_ canvasView: PKCanvasView) {
         guard hasAppeared else { return }
         growContentIfNeeded()
+    }
+}
+
+
+// MARK: - UIPencilInteractionDelegate
+
+extension InkCanvasViewController: UIPencilInteractionDelegate {
+
+    /// Double-tap on the barrel. Honours the coach's system setting where it maps onto a tool
+    /// this canvas actually has: there is no colour palette here to show, and `ignore` means
+    /// they turned the gesture off deliberately.
+    @available(iOS 17.5, *)
+    func pencilInteraction(
+        _ interaction: UIPencilInteraction,
+        didReceiveTap tap: UIPencilInteraction.Tap
+    ) {
+        guard UIPencilInteraction.preferredTapAction != .ignore else { return }
+        togglePencilTool()
+    }
+
+    /// Squeeze, on a Pencil Pro.
+    @available(iOS 17.5, *)
+    func pencilInteraction(
+        _ interaction: UIPencilInteraction,
+        didReceiveSqueeze squeeze: UIPencilInteraction.Squeeze
+    ) {
+        // Only on the way out of the gesture, or the tool flips twice per squeeze.
+        guard squeeze.phase == .ended else { return }
+        guard UIPencilInteraction.preferredSqueezeAction != .ignore else { return }
+        togglePencilTool()
+    }
+
+    /// The pre-17.5 double-tap callback. Still the only one that fires on older systems.
+    @available(iOS, introduced: 12.1, deprecated: 17.5)
+    func pencilInteractionDidTap(_ interaction: UIPencilInteraction) {
+        guard UIPencilInteraction.preferredTapAction != .ignore else { return }
+        togglePencilTool()
     }
 }

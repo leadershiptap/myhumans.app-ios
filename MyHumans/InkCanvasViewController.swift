@@ -288,23 +288,27 @@ final class InkCanvasViewController: UIViewController {
     /// Fit-to-width is the resting state. With the zoom locked, it is the ONLY state — the pinch
     /// gesture has nowhere to go, so the canvas cannot be accidentally resized mid-session.
     private var appliedInitialFit = false
+    /// The width the current fit was computed for. Recomputing on every layout pass is what
+    /// made this a loop.
+    private var fittedWidth: CGFloat = 0
 
+    /// Setting `zoomScale` or `contentSize` triggers `layoutSubviews`, which called straight
+    /// back into here — a feedback loop that ran while the pen was on the glass. It now does
+    /// nothing at all unless the view's width has actually changed, which happens on rotation,
+    /// on entering or leaving fullscreen, and never during a stroke.
     private func applyZoomPolicy() {
         let width = view.bounds.width
         guard width > 0, pageWidth > 0 else { return }
+        guard abs(width - fittedWidth) > 0.5 || !appliedInitialFit else { return }
+        fittedWidth = width
 
         let fit = width / pageWidth
         canvasView.minimumZoomScale = fit
         canvasView.maximumZoomScale = lockZoom ? fit : fit * 3
-        if lockZoom || !appliedInitialFit {
-            // Fit-to-width is the documented resting state, locked or not. Without the
-            // first-layout stamp, an unlocked canvas opened at scale 1 — a third of the page,
-            // for no reason a coach could see.
-            canvasView.zoomScale = fit
-            appliedInitialFit = true
-        } else if canvasView.zoomScale < fit {
-            canvasView.zoomScale = fit
-        }
+        // Fit-to-width is the resting state, locked or not: an unlocked canvas that opened at
+        // scale 1 showed a third of the page for no reason a coach could see.
+        canvasView.zoomScale = fit
+        appliedInitialFit = true
     }
 
     // MARK: - Crash recovery
@@ -399,9 +403,15 @@ final class InkCanvasViewController: UIViewController {
         let wantedContentHeight = max(visibleContentHeight * 2, written + visibleContentHeight)
 
         let wanted = CGSize(width: pageWidth * zoom, height: wantedContentHeight * zoom)
-        if abs(canvasView.contentSize.height - wanted.height) > 1
-            || abs(canvasView.contentSize.width - wanted.width) > 1 {
-            canvasView.contentSize = wanted
+        // GROW only, and only meaningfully. Assigning contentSize is a layout pass, and this
+        // runs on every drawing change — a jittering value here is felt as a stuttering pen.
+        let needsTaller = wanted.height - canvasView.contentSize.height > 8
+        let widthChanged = abs(canvasView.contentSize.width - wanted.width) > 0.5
+        if needsTaller || widthChanged {
+            canvasView.contentSize = CGSize(
+                width: wanted.width,
+                height: max(wanted.height, canvasView.contentSize.height),
+            )
         }
     }
 
@@ -446,7 +456,7 @@ final class InkCanvasViewController: UIViewController {
         alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
         alert.addAction(UIAlertAction(title: "Delete", style: .destructive) { [weak self] _ in
             guard let self else { return }
-            self.autosaveTimer?.invalidate()
+            self.cancelAutosave()
             self.canvasView.drawing = PKDrawing()
             InkRecovery.clear(noteId: self.recoveryKey)
             self.delegate?.inkCanvasDidDiscard(self, noteId: self.request.noteId)
@@ -459,7 +469,7 @@ final class InkCanvasViewController: UIViewController {
     /// question, and this canvas must not ask a second one or send anything back. Blank the
     /// page and drop the recovery copy so the deleted drawing cannot offer itself back.
     func clearFromWeb() {
-        autosaveTimer?.invalidate()
+        cancelAutosave()
         canvasView.drawing = PKDrawing()
         InkRecovery.clear(noteId: recoveryKey)
         // And the undo stack. Leaving it meant one Undo resurrected the deleted drawing, and
@@ -468,7 +478,7 @@ final class InkCanvasViewController: UIViewController {
     }
 
     @objc private func handleDone() {
-        autosaveTimer?.invalidate()
+        cancelAutosave()
         // The flush. Sent before dismissing so the web page has the final state even if the
         // coach immediately backgrounds the app.
         emit(.inkClose)
@@ -487,7 +497,7 @@ final class InkCanvasViewController: UIViewController {
     /// compares and quietly discards it when the page already has everything, which is the
     /// mechanism that was device-tested on day one.
     func finishFromWeb() {
-        autosaveTimer?.invalidate()
+        cancelAutosave()
         if !loadFailed { InkRecovery.save(canvasView.drawing, noteId: recoveryKey) }
         emit(.inkClose)
         delegate?.inkCanvasDidFinish(self)
@@ -495,24 +505,52 @@ final class InkCanvasViewController: UIViewController {
 
     // MARK: - Autosave
 
-    private var lastAutosaveEmitAt = Date()
+    /// The ceiling. Deliberately NOT reset by new strokes — that is the whole point of it —
+    /// and deliberately a timer rather than an inline emit.
+    private var autosaveCeilingTimer: Timer?
 
+    /// Called on every drawing change, so it must stay cheap.
+    ///
+    /// An earlier version emitted INLINE here once the ceiling had passed. `emit` rasterises
+    /// the whole page through `renderPNG` — synchronously, on the main thread — so that put a
+    /// full-page render inside the pen's own event handling, mid-stroke, every few seconds of
+    /// continuous writing. Strokes were dropped, and the harder the coach wrote the worse it
+    /// got. Both paths are timers now: nothing expensive happens while the pen is down.
     private func scheduleAutosave() {
-        // The debounce resets on every stroke, so steady writing with sub-idle gaps would
-        // postpone it forever — and everything behind the bridge is only as fresh as the last
-        // message. Past the ceiling, emit now instead of later.
-        if Date().timeIntervalSince(lastAutosaveEmitAt) >= Config.autosaveMaxSeconds {
-            autosaveTimer?.invalidate()
-            emit(.inkAutosave)
-            return
-        }
         autosaveTimer?.invalidate()
         autosaveTimer = Timer.scheduledTimer(
             withTimeInterval: Config.autosaveIdleSeconds,
             repeats: false
         ) { [weak self] _ in
-            self?.emit(.inkAutosave)
+            self?.fireAutosave()
         }
+
+        // Steady writing with sub-idle gaps would postpone the debounce forever, and everything
+        // behind the bridge is only as fresh as the last message. This one is armed once and
+        // left alone until it fires.
+        if autosaveCeilingTimer == nil {
+            autosaveCeilingTimer = Timer.scheduledTimer(
+                withTimeInterval: Config.autosaveMaxSeconds,
+                repeats: false
+            ) { [weak self] _ in
+                self?.fireAutosave()
+            }
+        }
+    }
+
+    private func cancelAutosave() {
+        autosaveTimer?.invalidate()
+        autosaveTimer = nil
+        autosaveCeilingTimer?.invalidate()
+        autosaveCeilingTimer = nil
+    }
+
+    private func fireAutosave() {
+        autosaveTimer?.invalidate()
+        autosaveTimer = nil
+        autosaveCeilingTimer?.invalidate()
+        autosaveCeilingTimer = nil
+        emit(.inkAutosave)
     }
 
     /// Builds a result and hands it to the delegate.

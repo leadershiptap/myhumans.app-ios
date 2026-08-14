@@ -56,18 +56,35 @@ enum Config {
     /// `Bridge.swift` about `tlenv.isIos`.
     static let userAgentSuffix = "MyHumansiOS/1.0"
 
-    /// How long the pen must be up before an autosave is sent to the web page.
+    /// How long the pen must be up before the FIRST save of a session is sent.
     ///
-    /// Faster than the web canvas's 4s commit gate on purpose: this message only crosses into
-    /// JavaScript, and the web side then applies its own commit schedule on top. Sending sooner
-    /// costs nothing and shortens the window in which a force-quit loses strokes.
-    static let autosaveIdleSeconds: TimeInterval = 1.5
+    /// Short on purpose, and only once: until the web app has committed a record there is
+    /// nothing on the server to update, so this is what makes "write two words and walk away"
+    /// safe. Every save after it runs on the long interval below.
+    static let firstSaveIdleSeconds: TimeInterval = 6
 
-    /// Ceiling on how long continuous writing can postpone an autosave. The idle debounce alone
-    /// never fires for a coach writing steadily with sub-1.5s stroke gaps, and everything behind
-    /// the bridge is only as fresh as the last message — so without a ceiling, an abrupt exit
-    /// mid-flow could owe minutes of ink instead of seconds.
-    static let autosaveMaxSeconds: TimeInterval = 8
+    /// How often a session that keeps being written in sends its drawing onward.
+    ///
+    /// Three minutes, not seconds. Every send serialises the drawing and crosses into
+    /// JavaScript, and the coach feels each one — so the cadence is set by what is needed to
+    /// bound loss, not by how fresh the server could theoretically be. The on-device recovery
+    /// copy runs on its own faster clock, and the flush on exit is what actually keeps the
+    /// record current.
+    static let autosaveIntervalSeconds: TimeInterval = 180
+
+    /// How often the drawing is written to the on-device recovery file while writing continues.
+    /// Cheap next to a save — no picture, no bridge, no network — so it can run far more often
+    /// and is what a crash actually falls back on.
+    static let recoveryIntervalSeconds: TimeInterval = 20
+
+    /// The eraser and the highlighter are multiples of the chosen pen width. A one-to-one
+    /// eraser cannot clear a word without tracing it, and a highlighter thinner than the text
+    /// it marks does not read as a highlight.
+    static let eraserWidthMultiplier: CGFloat = 4
+    static let highlighterWidthMultiplier: CGFloat = 4
+
+    /// Highlighter colour and opacity — a marker laid over words has to leave them readable.
+    static let highlighterAlpha: CGFloat = 0.25
 
     /// The writing page's width in content units, shared by the inline and fullscreen sizes of
     /// the canvas so they are one piece of paper at two magnifications. If the two sizes each

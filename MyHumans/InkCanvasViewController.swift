@@ -177,6 +177,9 @@ final class InkCanvasViewController: UIViewController {
         canvasView.showsHorizontalScrollIndicator = false
 
         applyScrollPolicy()
+        // Start on the same tool the page's row shows as selected, so the first stroke matches
+        // the highlighted button rather than whatever PencilKit last remembered.
+        apply(tool: Bridge.InkTool(["kind": "pen", "color": "#0f172a", "width": 3.0]))
 
         view.addSubview(canvasView)
         NSLayoutConstraint.activate([
@@ -310,11 +313,39 @@ final class InkCanvasViewController: UIViewController {
         let width = CGFloat(max(1, min(64, tool.width)))
         switch tool.kind {
         case "eraser":
-            canvasView.tool = PKEraserTool(.bitmap)
+            // Four times the pen. A one-to-one eraser has to trace a word to clear it, which is
+            // not what anyone reaches for an eraser to do.
+            let eraserWidth = width * Config.eraserWidthMultiplier
+            if #available(iOS 16.4, *) {
+                canvasView.tool = PKEraserTool(.bitmap, width: eraserWidth)
+            } else {
+                canvasView.tool = PKEraserTool(.bitmap)
+            }
+
         case "marker":
-            canvasView.tool = PKInkingTool(.marker, color: UIColor(hex: tool.color), width: width)
+            // A highlighter is yellow and see-through, and wider than the words it marks —
+            // otherwise it is just a second pen. The colour is the tool's, not the palette's:
+            // picking "red highlighter" is not a thing anyone means.
+            canvasView.tool = PKInkingTool(
+                .marker,
+                color: UIColor(hex: "#FDE047").withAlphaComponent(Config.highlighterAlpha),
+                width: width * Config.highlighterWidthMultiplier
+            )
+
         default:
-            canvasView.tool = PKInkingTool(.pen, color: UIColor(hex: tool.color), width: width)
+            // Constant width, no pressure response. Josh: whatever the tool says is what should
+            // come out, and a stroke that thins because the hand relaxed reads as a glitch
+            // rather than as expression. `.monoline` is exactly that ink; on anything older the
+            // pen is the closest available and still honours the chosen width.
+            if #available(iOS 17.0, *) {
+                canvasView.tool = PKInkingTool(
+                    .monoline, color: UIColor(hex: tool.color), width: width
+                )
+            } else {
+                canvasView.tool = PKInkingTool(
+                    .pen, color: UIColor(hex: tool.color), width: width
+                )
+            }
         }
         // Assigning a tool re-resolves the input pipeline, which resets the pan touch count.
         applyScrollPolicy()
@@ -552,9 +583,14 @@ final class InkCanvasViewController: UIViewController {
 
     // MARK: - Autosave
 
-    /// The ceiling. Deliberately NOT reset by new strokes — that is the whole point of it —
-    /// and deliberately a timer rather than an inline emit.
+    /// The long interval. Deliberately NOT reset by new strokes — that is the whole point of
+    /// it — and deliberately a timer rather than an inline emit.
     private var autosaveCeilingTimer: Timer?
+    /// The cheap on-device copy, on its own faster clock.
+    private var recoveryTimer: Timer?
+    /// Until the web app has a record, there is nothing on the server to update — so the first
+    /// save runs on a short fuse and carries a picture, and every one after it does not.
+    private var hasSavedOnce = false
 
     /// Called on every drawing change, so it must stay cheap.
     ///
@@ -564,20 +600,40 @@ final class InkCanvasViewController: UIViewController {
     /// continuous writing. Strokes were dropped, and the harder the coach wrote the worse it
     /// got. Both paths are timers now: nothing expensive happens while the pen is down.
     private func scheduleAutosave() {
-        autosaveTimer?.invalidate()
-        autosaveTimer = Timer.scheduledTimer(
-            withTimeInterval: Config.autosaveIdleSeconds,
-            repeats: false
-        ) { [weak self] _ in
-            self?.fireAutosave()
+        // The on-device copy first, because it is the cheap one and the one a crash falls back
+        // on. Armed once and left alone, so continuous writing cannot postpone it.
+        if recoveryTimer == nil {
+            recoveryTimer = Timer.scheduledTimer(
+                withTimeInterval: Config.recoveryIntervalSeconds,
+                repeats: false
+            ) { [weak self] _ in
+                guard let self else { return }
+                self.recoveryTimer = nil
+                self.persistForRecovery()
+            }
         }
 
-        // Steady writing with sub-idle gaps would postpone the debounce forever, and everything
-        // behind the bridge is only as fresh as the last message. This one is armed once and
-        // left alone until it fires.
+        // The FIRST save of a session runs on a short idle fuse: until the web app has minted a
+        // record there is nothing on the server to update, and "write two words and walk away"
+        // has to be safe.
+        if !hasSavedOnce {
+            autosaveTimer?.invalidate()
+            autosaveTimer = Timer.scheduledTimer(
+                withTimeInterval: Config.firstSaveIdleSeconds,
+                repeats: false
+            ) { [weak self] _ in
+                self?.fireAutosave()
+            }
+            return
+        }
+
+        // After that: a long interval, armed once and never reset by new strokes. Each send
+        // serialises the whole drawing and crosses into JavaScript, and the coach feels it — so
+        // the cadence is what bounds loss, not what keeps the server maximally fresh. The flush
+        // on the way out is what actually makes the record current.
         if autosaveCeilingTimer == nil {
             autosaveCeilingTimer = Timer.scheduledTimer(
-                withTimeInterval: Config.autosaveMaxSeconds,
+                withTimeInterval: Config.autosaveIntervalSeconds,
                 repeats: false
             ) { [weak self] _ in
                 self?.fireAutosave()
@@ -590,6 +646,8 @@ final class InkCanvasViewController: UIViewController {
         autosaveTimer = nil
         autosaveCeilingTimer?.invalidate()
         autosaveCeilingTimer = nil
+        recoveryTimer?.invalidate()
+        recoveryTimer = nil
     }
 
     private func fireAutosave() {
@@ -619,13 +677,36 @@ final class InkCanvasViewController: UIViewController {
 
         let drawing = canvasView.drawing
         guard !drawing.bounds.isNull, !drawing.bounds.isEmpty else { return }
-        guard let png = renderPNG(for: drawing) else { return }
+
+        // The PICTURE is the expensive half — a full-page raster, composite and PNG compress,
+        // all on the main thread. The web app only needs one to MINT a record; after that it
+        // updates the drawing and refreshes the picture on its own slower schedule, and the
+        // flush on the way out always carries a fresh one. So the periodic saves send none, and
+        // the coach stops feeling a render every time they pause.
+        let png: String
+        if hasSavedOnce {
+            png = ""
+        } else {
+            guard let first = renderPNG(for: drawing) else { return }
+            png = first.base64EncodedString()
+        }
+        hasSavedOnce = true
 
         // Written before the message goes out rather than after: if anything downstream of here
         // fails, the strokes are still on disk.
         InkRecovery.save(drawing, noteId: recoveryKey)
 
-        delegate?.inkCanvas(self, didProduce: result(for: drawing, png: png), as: .inkAutosave)
+        delegate?.inkCanvas(
+            self,
+            didProduce: Bridge.InkResult(
+                session: request.recoveryKey,
+                noteId: request.noteId,
+                drawing: drawing.dataRepresentation().base64EncodedString(),
+                png: png,
+                isEmpty: false
+            ),
+            as: .inkAutosave
+        )
     }
 
     private func emitFinal(_ message: Bridge.OutboundMessage) {

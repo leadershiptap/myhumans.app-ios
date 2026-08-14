@@ -80,24 +80,14 @@ enum Config {
     /// The eraser and the highlighter are multiples of the chosen pen width, so picking a pen
     /// width sets all three tools at once and switching between them needs no second thought.
     ///
-    /// The three tools as ratios of one another: pen 1, highlighter 2.5, eraser 5.
+    /// Tool sizes are no longer computed here.
     ///
-    /// Josh's numbers, and small ones on purpose. The previous attempt used large absolute
-    /// multiples (22.5 and 60) and they did not survive contact with PencilKit: every ink type
-    /// has its own `validWidthRange` and anything past it is silently pinned to the end, so the
-    /// four eraser slots all collapsed onto one width and the highlighter came out the size of
-    /// the pen. Ratios in this range sit inside what every ink actually allows, which is what
-    /// makes the four slots stay four distinct sizes.
-    ///
-    /// They also carry the EQUIVALENCE between the tools, which is what lets the page keep one
-    /// width slot per tool and never translate between them: at the same slot, each tool is
-    /// already the size that goes with the others.
-    static let eraserWidthMultiplier: CGFloat = 5
-    /// Wider than the 2.5 first tried. At that ratio the finest slot asked for 2.5pt, which is
-    /// a thin line rather than a highlight — and `.monoline`'s own ceiling is low enough that
-    /// every slot clamped onto it, so all four came out identical AND tiny. See the ink
-    /// selection in `apply(tool:)`, which now picks an ink that can actually carry the width.
-    static let highlighterWidthMultiplier: CGFloat = 8
+    /// They were ratios of the pen (and multipliers before that), and both were wrong for the
+    /// same reason: the sizes that feel right are not a constant multiple of one another, and a
+    /// multiplier that overshoots an ink's limit is silently clamped — so slots collapsed onto
+    /// one width with nothing to show why. The page now sends the width it wants for the tool
+    /// it is asking for, one readable table per tool, and this side clamps it into whatever the
+    /// chosen ink will actually accept.
 
     /// Highlighter colour and opacity — a marker laid over words has to leave them readable.
     static let highlighterAlpha: CGFloat = 0.25

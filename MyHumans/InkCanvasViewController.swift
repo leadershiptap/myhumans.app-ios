@@ -371,12 +371,16 @@ final class InkCanvasViewController: UIViewController {
     func apply(tool: Bridge.InkTool) {
         currentTool = tool
         if tool.kind != "eraser" { toolBeforeEraser = tool }
-        let width = CGFloat(max(0.5, min(64, tool.width)))
+        // Only a sanity bound. The real limit is each ink's own `validWidthRange`, applied
+        // per-tool below, because that is the one that silently pins a width and looks like a
+        // bug rather than a limit.
+        let width = CGFloat(max(0.5, min(200, tool.width)))
         switch tool.kind {
         case "eraser":
             // Four times the pen. A one-to-one eraser has to trace a word to clear it, which is
             // not what anyone reaches for an eraser to do.
-            let eraserWidth = width * Config.eraserWidthMultiplier
+            // The page's own number for this slot — see NATIVE_TOOL_SIZES there.
+            let eraserWidth = width
             if #available(iOS 16.4, *) {
                 canvasView.tool = PKEraserTool(.bitmap, width: eraserWidth)
             } else {
@@ -398,7 +402,7 @@ final class InkCanvasViewController: UIViewController {
             // So: monoline while it can actually carry the width, and the marker, which has the
             // range, once it cannot. Tilt response is the price of a highlighter you can see,
             // and only at the widths where there is no alternative.
-            let highlighterWidth = width * Config.highlighterWidthMultiplier
+            let highlighterWidth = width
             let highlighterColour = UIColor(hex: "#FDE047")
                 .withAlphaComponent(Config.highlighterAlpha)
             canvasView.tool = PKInkingTool(

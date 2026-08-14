@@ -179,7 +179,7 @@ final class InkCanvasViewController: UIViewController {
         applyScrollPolicy()
         // Start on the same tool the page's row shows as selected, so the first stroke matches
         // the highlighted button rather than whatever PencilKit last remembered.
-        apply(tool: Bridge.InkTool(["kind": "pen", "color": "#0f172a", "width": 3.0]))
+        apply(tool: Bridge.InkTool(["kind": "pen", "color": "#0f172a", "width": 1.8]))
 
         view.addSubview(canvasView)
         NSLayoutConstraint.activate([
@@ -308,9 +308,20 @@ final class InkCanvasViewController: UIViewController {
         }
     }
 
+    /// Clamps into the range PencilKit will actually honour for a given ink.
+    ///
+    /// Each ink type has its own `validWidthRange`, and a width outside it is silently pinned
+    /// to the nearest end — which is why a multiplied highlighter could come out looking the
+    /// same as the pen. Clamping here means an out-of-range request degrades to the widest
+    /// stroke the ink allows rather than to no visible change at all.
+    private func clamped(_ width: CGFloat, for inkType: PKInkingTool.InkType) -> CGFloat {
+        let range = inkType.validWidthRange
+        return min(max(width, range.lowerBound), range.upperBound)
+    }
+
     /// What the page's own tool row picked.
     func apply(tool: Bridge.InkTool) {
-        let width = CGFloat(max(1, min(64, tool.width)))
+        let width = CGFloat(max(0.5, min(64, tool.width)))
         switch tool.kind {
         case "eraser":
             // Four times the pen. A one-to-one eraser has to trace a word to clear it, which is
@@ -329,7 +340,7 @@ final class InkCanvasViewController: UIViewController {
             canvasView.tool = PKInkingTool(
                 .marker,
                 color: UIColor(hex: "#FDE047").withAlphaComponent(Config.highlighterAlpha),
-                width: width * Config.highlighterWidthMultiplier
+                width: clamped(width * Config.highlighterWidthMultiplier, for: .marker)
             )
 
         default:
@@ -339,11 +350,13 @@ final class InkCanvasViewController: UIViewController {
             // pen is the closest available and still honours the chosen width.
             if #available(iOS 17.0, *) {
                 canvasView.tool = PKInkingTool(
-                    .monoline, color: UIColor(hex: tool.color), width: width
+                    .monoline,
+                    color: UIColor(hex: tool.color),
+                    width: clamped(width, for: .monoline)
                 )
             } else {
                 canvasView.tool = PKInkingTool(
-                    .pen, color: UIColor(hex: tool.color), width: width
+                    .pen, color: UIColor(hex: tool.color), width: clamped(width, for: .pen)
                 )
             }
         }

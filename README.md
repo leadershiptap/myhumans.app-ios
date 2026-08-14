@@ -174,9 +174,5 @@ change is needed for the drawing either — `updateInkNoteFields` and `compressS
 | `MyHumans/Config.swift` | What to load, timings, export limits |
 | `MyHumans/AppDelegate.swift` | Entry point |
 | `MyHumans/Resources/harness.html` | The stub take-notes page, for developing without the web repo |
-| `web/bridge.ts` | The web half of the contract. **Moves to `lib/native/bridge.ts` at bolt-on** |
-| `web/bridge.test.ts` | Its Vitest suite — 12 tests, the only part verifiable without an iPad |
+| *(moved)* | The bridge's TypeScript half lives in `lib/native/` in the `myhumansapp` repo, tests included — it moved at bolt-on (that repo's PR #254) and the `web/` folder here was deleted |
 
-`web/` is TypeScript living in a Swift repo on purpose: the two halves of the contract are
-designed together, so the bolt-on is a file move rather than a rewrite. Run its tests with
-`npx vitest run --root web --environment node`. Delete the folder once it has moved.

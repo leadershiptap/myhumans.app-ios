@@ -91,6 +91,10 @@ extension Bridge {
         /// editor. The shell flushes (emits `ink.close`) and tears the canvas down.
         case finish
 
+        /// A web dialog or overlay needs the screen: hide the canvas (it always draws above
+        /// web content, so without this every dialog opens underneath it). Show restores it.
+        case setHidden(Bool)
+
         /// The page deleted the note (its own Clear flow) and the canvas must blank WITHOUT
         /// emitting anything back — the web side already did the deleting.
         case clearCanvas
@@ -113,6 +117,8 @@ extension Bridge {
                 self = .redo
             case "ink.finish":
                 self = .finish
+            case "ink.hidden":
+                self = .setHidden((dict["hidden"] as? Bool) ?? false)
             case "ink.clearCanvas":
                 self = .clearCanvas
             default:
@@ -155,6 +161,15 @@ extension Bridge {
         /// Whether to draw the page dark. Mirrors the web canvas's `#ffffff` / `#1e1e1e`.
         let darkMode: Bool
 
+        /// Stable identity for the on-device recovery copy, independent of the note id.
+        ///
+        /// A brand-new note has no id until the web side's first commit mints one, and the shell
+        /// is not told when that happens — so keying recovery by note id filed every new note
+        /// under one shared "unsaved" slot, where the next blank page ANYONE opened would be
+        /// offered it. The web side sends its own draft key, which is scoped to the person and
+        /// the meeting, exists before the note does, and never collides across people.
+        let recoveryKey: String?
+
         /// Where to embed, in the web view's coordinate space. Nil means full screen (v1).
         let frame: CGRect?
 
@@ -166,6 +181,7 @@ extension Bridge {
             drawing = dict["drawing"] as? String
             title = (dict["title"] as? String) ?? "Note"
             darkMode = (dict["darkMode"] as? Bool) ?? false
+            recoveryKey = dict["recoveryKey"] as? String
             frame = Bridge.rect(from: dict["frame"])
             prefs = (dict["prefs"] as? [String: Any]).map(InkPrefs.init)
         }
@@ -202,6 +218,11 @@ extension Bridge {
         /// The flush — the coach tapped Done on the modal screen, or the page sent
         /// `ink.finish`. The web side commits it as final.
         case inkClose = "ink.close"
+
+        /// The incoming drawing could not be decoded. Saving is off, the canvas is gone, and
+        /// the page should fall back to its read-only picture. A v1 web app's decoder returns
+        /// null for the unknown name and ignores it — rule 2, working as designed.
+        case inkLoadFailed = "ink.loadFailed"
 
         /// The coach cleared the page from the modal screen's own trash button. The web side
         /// deletes the saved record, matching what Clear does on the web canvas today.
@@ -243,6 +264,11 @@ extension Bridge {
 
     /// Payload for `ink.discard`.
     struct InkDiscard: Encodable {
+        let noteId: String?
+    }
+
+    /// Payload for `ink.loadFailed`.
+    struct InkLoadFailed: Encodable {
         let noteId: String?
     }
 }

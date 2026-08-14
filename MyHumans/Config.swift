@@ -43,6 +43,12 @@ enum Config {
     /// costs nothing and shortens the window in which a force-quit loses strokes.
     static let autosaveIdleSeconds: TimeInterval = 1.5
 
+    /// Ceiling on how long continuous writing can postpone an autosave. The idle debounce alone
+    /// never fires for a coach writing steadily with sub-1.5s stroke gaps, and everything behind
+    /// the bridge is only as fresh as the last message — so without a ceiling, an abrupt exit
+    /// mid-flow could owe minutes of ink instead of seconds.
+    static let autosaveMaxSeconds: TimeInterval = 8
+
     /// The writing page's width in content units, shared by the inline and fullscreen sizes of
     /// the canvas so they are one piece of paper at two magnifications. If the two sizes each
     /// used their own width, strokes written at the wide one would clip at the narrow one — data

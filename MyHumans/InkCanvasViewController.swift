@@ -9,6 +9,8 @@ protocol InkCanvasViewControllerDelegate: AnyObject {
         as message: Bridge.OutboundMessage
     )
     func inkCanvasDidDiscard(_ controller: InkCanvasViewController, noteId: String?)
+    /// The incoming drawing would not decode and the canvas refused to open over it.
+    func inkCanvasDidFailLoad(_ controller: InkCanvasViewController, noteId: String?)
     func inkCanvasDidFinish(_ controller: InkCanvasViewController)
 }
 
@@ -40,6 +42,12 @@ final class InkCanvasViewController: UIViewController {
 
     let mode: Mode
     private let request: Bridge.OpenInkRequest
+
+    /// What the on-device recovery copy is filed under. The web side's draft key when it sent
+    /// one — scoped to the person and meeting, existing before the note does — else the note id.
+    /// Keying by note id alone filed every brand-new note under one shared "unsaved" slot, and
+    /// the next blank page ANYONE opened was offered another person's handwriting.
+    private var recoveryKey: String? { request.recoveryKey ?? request.noteId }
     private let canvasView = PKCanvasView()
     private var toolPicker: PKToolPicker?
     private var autosaveTimer: Timer?
@@ -77,6 +85,11 @@ final class InkCanvasViewController: UIViewController {
         if let prefs = request.prefs {
             twoFingerScroll = prefs.twoFingerScroll ?? twoFingerScroll
             lockZoom = prefs.lockZoom ?? lockZoom
+        } else if mode == .modal {
+            // A v1 web app sends no prefs and expects v1 behaviour: one-finger scroll, free
+            // pinch. The new guards are defaults for the page that can actually toggle them.
+            twoFingerScroll = false
+            lockZoom = false
         }
     }
 
@@ -110,7 +123,14 @@ final class InkCanvasViewController: UIViewController {
         toolPicker = picker
 
         if loadFailed {
-            presentLoadFailure()
+            if mode == .inline {
+                // No alert over an embedded canvas: the page owns this failure. It gets the
+                // signal, swaps in its read-only picture, and this dead paper goes away —
+                // otherwise the coach is left a live-looking rectangle that eats every stroke.
+                delegate?.inkCanvasDidFailLoad(self, noteId: request.noteId)
+            } else {
+                presentLoadFailure()
+            }
         } else {
             offerRecoveryIfNeeded()
         }
@@ -264,6 +284,8 @@ final class InkCanvasViewController: UIViewController {
 
     /// Fit-to-width is the resting state. With the zoom locked, it is the ONLY state — the pinch
     /// gesture has nowhere to go, so the canvas cannot be accidentally resized mid-session.
+    private var appliedInitialFit = false
+
     private func applyZoomPolicy() {
         let width = view.bounds.width
         guard width > 0, pageWidth > 0 else { return }
@@ -271,7 +293,13 @@ final class InkCanvasViewController: UIViewController {
         let fit = width / pageWidth
         canvasView.minimumZoomScale = fit
         canvasView.maximumZoomScale = lockZoom ? fit : fit * 3
-        if lockZoom || canvasView.zoomScale < fit {
+        if lockZoom || !appliedInitialFit {
+            // Fit-to-width is the documented resting state, locked or not. Without the
+            // first-layout stamp, an unlocked canvas opened at scale 1 — a third of the page,
+            // for no reason a coach could see.
+            canvasView.zoomScale = fit
+            appliedInitialFit = true
+        } else if canvasView.zoomScale < fit {
             canvasView.zoomScale = fit
         }
     }
@@ -294,7 +322,7 @@ final class InkCanvasViewController: UIViewController {
         // A screen that could not open its own note must not write a recovery copy of the blank
         // page it is showing. That is the same overwrite `loadFailed` exists to prevent.
         guard !loadFailed else { return }
-        InkRecovery.save(canvasView.drawing, noteId: request.noteId)
+        InkRecovery.save(canvasView.drawing, noteId: recoveryKey)
     }
 
     /// Offered, never applied silently.
@@ -304,7 +332,7 @@ final class InkCanvasViewController: UIViewController {
     /// already shows exactly what was recovered, there is nothing to ask about and the copy goes
     /// quietly.
     private func offerRecoveryIfNeeded() {
-        guard let recovered = InkRecovery.load(noteId: request.noteId) else { return }
+        guard let recovered = InkRecovery.load(noteId: recoveryKey) else { return }
 
         guard recovered.dataRepresentation() != canvasView.drawing.dataRepresentation() else {
             InkRecovery.clear(noteId: request.noteId)
@@ -337,7 +365,7 @@ final class InkCanvasViewController: UIViewController {
     /// definition, the only one left. Everything else here can be undone by opening the note
     /// again, so this is the only place a second tap is worth asking for.
     private func confirmDiscardOfRecovery() {
-        let noteId = request.noteId
+        let noteId = recoveryKey
         let alert = UIAlertController(
             title: "Discard the unsaved handwriting?",
             message: "This is the only copy. Once it's gone it can't be brought back.",
@@ -387,6 +415,21 @@ final class InkCanvasViewController: UIViewController {
     func undoFromWeb() { canvasView.undoManager?.undo() }
     func redoFromWeb() { canvasView.undoManager?.redo() }
 
+    /// The tool picker follows first responder, and any tap into a web text field takes it.
+    /// Called by the shell whenever the canvas should own input again — a frame update, a
+    /// preference change — and cheap to call when it already does.
+    func reassertInput() {
+        guard hasAppeared, !canvasView.isFirstResponder else { return }
+        canvasView.becomeFirstResponder()
+    }
+
+    /// The shell is about to tear this canvas down outside the normal flows — the web content
+    /// process died, or the page navigated away for real. Bank the ink first.
+    func persistNow() {
+        guard !loadFailed else { return }
+        InkRecovery.save(canvasView.drawing, noteId: recoveryKey)
+    }
+
     @objc private func toggleFingerDrawing() {
         canvasView.drawingPolicy = canvasView.drawingPolicy == .pencilOnly ? .anyInput : .pencilOnly
     }
@@ -402,7 +445,7 @@ final class InkCanvasViewController: UIViewController {
             guard let self else { return }
             self.autosaveTimer?.invalidate()
             self.canvasView.drawing = PKDrawing()
-            InkRecovery.clear(noteId: self.request.noteId)
+            InkRecovery.clear(noteId: self.recoveryKey)
             self.delegate?.inkCanvasDidDiscard(self, noteId: self.request.noteId)
             self.delegate?.inkCanvasDidFinish(self)
         })
@@ -415,7 +458,10 @@ final class InkCanvasViewController: UIViewController {
     func clearFromWeb() {
         autosaveTimer?.invalidate()
         canvasView.drawing = PKDrawing()
-        InkRecovery.clear(noteId: request.noteId)
+        InkRecovery.clear(noteId: recoveryKey)
+        // And the undo stack. Leaving it meant one Undo resurrected the deleted drawing, and
+        // the autosave that followed committed it into a brand-new note.
+        canvasView.undoManager?.removeAllActions()
     }
 
     @objc private func handleDone() {
@@ -426,7 +472,7 @@ final class InkCanvasViewController: UIViewController {
         // Past the flush the copy is stale, and stale recovery is its own kind of data loss. But
         // a screen that never took ownership of the note must not delete a recovery copy it
         // deliberately refused to offer.
-        if !loadFailed { InkRecovery.clear(noteId: request.noteId) }
+        if !loadFailed { InkRecovery.clear(noteId: recoveryKey) }
         delegate?.inkCanvasDidFinish(self)
     }
 
@@ -439,14 +485,24 @@ final class InkCanvasViewController: UIViewController {
     /// mechanism that was device-tested on day one.
     func finishFromWeb() {
         autosaveTimer?.invalidate()
-        if !loadFailed { InkRecovery.save(canvasView.drawing, noteId: request.noteId) }
+        if !loadFailed { InkRecovery.save(canvasView.drawing, noteId: recoveryKey) }
         emit(.inkClose)
         delegate?.inkCanvasDidFinish(self)
     }
 
     // MARK: - Autosave
 
+    private var lastAutosaveEmitAt = Date()
+
     private func scheduleAutosave() {
+        // The debounce resets on every stroke, so steady writing with sub-idle gaps would
+        // postpone it forever — and everything behind the bridge is only as fresh as the last
+        // message. Past the ceiling, emit now instead of later.
+        if Date().timeIntervalSince(lastAutosaveEmitAt) >= Config.autosaveMaxSeconds {
+            autosaveTimer?.invalidate()
+            emit(.inkAutosave)
+            return
+        }
         autosaveTimer?.invalidate()
         autosaveTimer = Timer.scheduledTimer(
             withTimeInterval: Config.autosaveIdleSeconds,

@@ -326,7 +326,10 @@ final class InkCanvasViewController: UIViewController {
         case "eraser":
             // Four times the pen. A one-to-one eraser has to trace a word to clear it, which is
             // not what anyone reaches for an eraser to do.
-            let eraserWidth = width * Config.eraserWidthMultiplier
+            // Capped as well as multiplied. At the widest pen the multiple alone reaches
+            // ~300pt, roughly a third of the page — past the point where it is an eraser and
+            // into the point where one tap clears a paragraph the coach meant to keep.
+            let eraserWidth = min(width * Config.eraserWidthMultiplier, Config.eraserMaxWidth)
             if #available(iOS 16.4, *) {
                 canvasView.tool = PKEraserTool(.bitmap, width: eraserWidth)
             } else {

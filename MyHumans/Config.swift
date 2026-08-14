@@ -80,12 +80,23 @@ enum Config {
     /// The eraser and the highlighter are multiples of the chosen pen width, so picking a pen
     /// width sets all three tools at once and switching between them needs no second thought.
     ///
-    /// Large multiples on purpose. A highlighter has to be several times the text it marks or
-    /// it reads as a second pen, and an eraser at anything near pen width has to TRACE a word
-    /// to clear it, which is not what anyone reaches for an eraser to do. At the finest pen
-    /// (1pt) that is a 15pt highlighter and a 20pt eraser — Josh's numbers, from using it.
-    static let eraserWidthMultiplier: CGFloat = 20
-    static let highlighterWidthMultiplier: CGFloat = 15
+    /// Large multiples on purpose, and these are the third calibration — each one from Josh
+    /// writing with the previous. A highlighter has to be several times the text it marks or it
+    /// reads as a second pen, and an eraser at anything near pen width has to TRACE a word to
+    /// clear it, which is not what anyone reaches for an eraser to do.
+    ///
+    /// They also carry the EQUIVALENCE between the three tools, which is why the tool row can
+    /// keep one width slot per tool and never need translating: at the same slot, each tool is
+    /// already the size that goes with the others. Josh's calibration was that the highlighter
+    /// wanted about half again what it had, and the eraser three times — at the finest pen
+    /// (1pt) that is a 22.5pt highlighter and a 60pt eraser.
+    static let eraserWidthMultiplier: CGFloat = 60
+    static let highlighterWidthMultiplier: CGFloat = 22.5
+
+    /// Ceiling on the eraser, independent of the pen it is scaled from. The multiple alone
+    /// reaches ~300pt at the widest pen — about a third of the page — which stops being an
+    /// eraser and starts being a way to lose a paragraph in one pass.
+    static let eraserMaxWidth: CGFloat = 140
 
     /// Highlighter colour and opacity — a marker laid over words has to leave them readable.
     static let highlighterAlpha: CGFloat = 0.25

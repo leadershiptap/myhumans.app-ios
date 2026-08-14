@@ -77,11 +77,15 @@ enum Config {
     /// and is what a crash actually falls back on.
     static let recoveryIntervalSeconds: TimeInterval = 20
 
-    /// The eraser and the highlighter are multiples of the chosen pen width. A one-to-one
-    /// eraser cannot clear a word without tracing it, and a highlighter thinner than the text
-    /// it marks does not read as a highlight.
-    static let eraserWidthMultiplier: CGFloat = 4
-    static let highlighterWidthMultiplier: CGFloat = 4
+    /// The eraser and the highlighter are multiples of the chosen pen width, so picking a pen
+    /// width sets all three tools at once and switching between them needs no second thought.
+    ///
+    /// Large multiples on purpose. A highlighter has to be several times the text it marks or
+    /// it reads as a second pen, and an eraser at anything near pen width has to TRACE a word
+    /// to clear it, which is not what anyone reaches for an eraser to do. At the finest pen
+    /// (1pt) that is a 15pt highlighter and a 20pt eraser — Josh's numbers, from using it.
+    static let eraserWidthMultiplier: CGFloat = 20
+    static let highlighterWidthMultiplier: CGFloat = 15
 
     /// Highlighter colour and opacity — a marker laid over words has to leave them readable.
     static let highlighterAlpha: CGFloat = 0.25

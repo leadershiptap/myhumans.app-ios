@@ -58,6 +58,13 @@ final class InkCanvasViewController: UIViewController {
     /// gesture is a TOGGLE, so it has to remember what it toggled away from.
     private var currentTool = Bridge.InkTool(["kind": "pen", "color": "#0f172a", "width": 1.8])
     private var toolBeforeEraser: Bridge.InkTool?
+
+    /// The last width the page asked for, PER TOOL.
+    ///
+    /// Sizes live in the page now — one table per tool — and they are not multiples of each
+    /// other, so this side cannot work out an eraser width from a pen width. Remembering what
+    /// it was last told is the only way a squeeze can switch tools without inventing a size.
+    private var lastWidthByKind: [String: CGFloat] = [:]
     private let canvasView = PKCanvasView()
     private var toolPicker: PKToolPicker?
     private var autosaveTimer: Timer?
@@ -320,8 +327,17 @@ final class InkCanvasViewController: UIViewController {
         if currentTool.kind == "eraser" {
             next = toolBeforeEraser ?? Bridge.InkTool(["kind": "pen", "color": "#0f172a", "width": 1.8])
         } else {
+            // The ERASER's own width, never the pen's. Carrying `currentTool.width` across is
+            // what made a squeeze produce a 1.5pt eraser: pen widths and eraser widths come
+            // from different tables in the page and are nothing like each other, so reusing one
+            // for the other is not a small error — it is two orders of magnitude.
+            //
+            // The page confirms this a moment later with its own `ink.tool`; this is what
+            // stops the gesture feeling wrong in between.
             next = Bridge.InkTool([
-                "kind": "eraser", "color": currentTool.color, "width": currentTool.width,
+                "kind": "eraser",
+                "color": currentTool.color,
+                "width": Double(lastWidthByKind["eraser"] ?? Config.fallbackEraserWidth),
             ])
         }
         apply(tool: next)
@@ -370,6 +386,7 @@ final class InkCanvasViewController: UIViewController {
     /// What the page's own tool row picked.
     func apply(tool: Bridge.InkTool) {
         currentTool = tool
+        lastWidthByKind[tool.kind] = CGFloat(tool.width)
         if tool.kind != "eraser" { toolBeforeEraser = tool }
         // Only a sanity bound. The real limit is each ink's own `validWidthRange`, applied
         // per-tool below, because that is the one that silently pins a width and looks like a

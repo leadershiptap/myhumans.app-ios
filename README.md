@@ -55,27 +55,19 @@ iPad, and for the eventual Apple Business Manager distribution.
 
 `Config.startTarget` decides:
 
-- `.harness` — the bundled `Resources/harness.html`. Drives all four bridge messages against a
-  page we control, so the canvas and the whole handoff can be finished and verified **before the
-  `myhumansapp` repo knows this shell exists**. This is the default.
-- `.liveApp` — the real `myhumans.app`. Use this to exercise sign-in, session persistence across
-  a force-quit, every screen, and the Microsoft calendar-connect redirect. All of that works with
-  no change to the web repo; only the ink handoff needs the bolt-on.
+- `.liveApp` — the real `myhumans.app`. **This is the default**, and has been since the bolt-on
+  landed on 13 Aug 2026: the web app now opens the native canvas itself, so the shell has a
+  real job to do from launch.
+- `.harness` — the bundled `Resources/harness.html`. A stub take-notes page that drives the
+  bridge against something we control. Still the fastest way to work on the ink screen without
+  a round trip through Render, and still the only way to exercise the v1 full-screen flow.
 
-There is deliberately no in-app switch — a debug toggle is one more thing that can be left in the
-wrong position and ship.
+There is deliberately no in-app switch — a debug toggle is one more thing that can be left in
+the wrong position and ship, and this is a two-character edit and a rebuild.
 
 > There is no localhost option and there cannot usefully be one: Clerk's production keys only
-> resolve `myhumans.app`, so no authenticated page renders anywhere else. That constraint already
-> governs the web repo.
-
-### If Xcode refuses to open the project
-
-The `.xcodeproj` here is hand-written. If it will not open, this takes two minutes:
-**File → New → Project → iOS → App**, name it `MyHumans`, interface Storyboard, language Swift,
-save it alongside this README, then delete the generated `ViewController.swift`,
-`Main.storyboard` and `SceneDelegate.swift` and drag the `MyHumans` folder in. Nothing in the
-code depends on the project file.
+> resolve `myhumans.app`, so no authenticated page renders anywhere else. That constraint
+> already governs the web repo.
 
 ## The bridge
 
@@ -103,13 +95,20 @@ window.__myhumansNative = { version: 2, caps: ['ink', 'ink-inline'] }
 
 | Message | Payload | When |
 |---|---|---|
-| `ink.autosave` | `{ noteId, drawing, png, format }` | debounced ~1.5s after the pen lifts |
-| `ink.close` | `{ noteId, drawing, png, format }` | the coach tapped Done — this is the flush |
-| `ink.discard` | `{ noteId }` | the coach cleared the page |
+| `ink.autosave` | `{ session, noteId, drawing, png, format }` | first save of a session ~6s after the pen lifts, then every 3 minutes |
+| `ink.close` | `{ session, noteId, drawing, png, format }` | the flush — `ink.finish`, or Done on the modal screen |
+| `ink.discard` | `{ session, noteId }` | the coach cleared the page from the modal screen |
+| `ink.loadFailed` | `{ session, noteId }` | the stored drawing would not decode; saving is off and the canvas is gone |
+| `ink.toolChanged` | `{ session, kind }` | the Pencil's own squeeze or double-tap switched tools |
 
-The payload is JSON, then base64. That hop exists so nothing has to escape quotes, newlines or
-backslashes into a JS string literal — `png` and `drawing` are base64 blobs hundreds of kilobytes
-long, and one escaping mistake there is a silent, intermittent data-loss bug.
+`png` is EMPTY on the periodic saves. Rendering one is a full-page raster on the main thread and
+the coach feels every one, so only the save that MINTS a record carries a picture, and so does
+every flush. The web side keeps the note's existing picture in between.
+
+`session` is the page's own draft key, and it is load-bearing rather than diagnostic: a flush
+crosses the bridge asynchronously, and by the time it lands the page may have navigated to a
+DIFFERENT person's take-notes screen. Without a tag saying whose handwriting it is, that page
+accepts it and commits one coach's note into another person's record. It did, once.
 
 ### Two rules
 
@@ -124,26 +123,25 @@ presents changes which of tldraw's internal guards fire — so the shell **appen
 `applicationNameForUserAgent` rather than replacing it, and nothing on either side may branch on
 the UA.
 
-## What the bolt-on has to do
+## The bolt-on landed
 
-When this lands in the web app (one PR, after the Postgres cutover), the web side must:
+It shipped on 13 Aug 2026 (`myhumansapp` PRs #254 and #258) and the web half now lives at
+`lib/native/` in that repo, which is its source of truth. The `web/` folder that used to mirror
+it here is gone, along with the CI job that tested it.
 
-- Feature-detect with `hasNativeInk()` and call `ink.open` instead of mounting `TldrawNoteCanvas`.
-- On `ink.autosave`, **write the localStorage draft first**, then commit on its existing
-  schedule. This is load-bearing: the app's offline guard skips the commit when there is no
-  network, so if the draft is not written from this message, a force-quit while offline loses
-  everything the coach wrote. The drawing lives in the native canvas and nowhere else until this
-  message arrives.
-- On `ink.close`, commit as final.
-- On `ink.discard`, delete the saved record — the same thing Clear does on the web canvas today.
-- Store `format` alongside the drawing, so a tldraw canvas never tries to open a PencilKit blob.
-  A `pencilkit` note on the web renders its PNG read-only; a `tldraw` note in this shell falls
-  back to the tldraw canvas in the web view.
+What the web side does, for orientation:
 
-No read path changes at all: ink is already rendered everywhere from a flattened PNG served
-through `/api/notes/[id]/ink-image`, and PencilKit produces one just as tldraw does. No schema
-change is needed for the drawing either — `updateInkNoteFields` and `compressSnapshot` take an
-*opaque string*, gzip it and store it. Only the `format` discriminator is new.
+- `chooseInkEditor` / `editorForNewNote` decide which editor opens a note, from the
+  `ink_format` column added in migration `0021`.
+- `planNativeInk` decides what each message MEANS — write the draft then commit, delete,
+  re-render, or ignore.
+- `nativeInkSource` lets the existing `commit()` read from a shell message instead of a tldraw
+  canvas, so the whole save path is shared rather than forked.
+- The take-notes page renders the tool row, measures the rectangle the canvas embeds into, and
+  owns the size tables.
+
+**Handwriting is iPad-only now.** The Draw tab in a browser says so and points at Type. Ink
+notes still render everywhere, read-only, from the same flattened PNG they always did.
 
 ## Things worth not undoing
 
@@ -169,10 +167,11 @@ change is needed for the drawing either — `updateInkNoteFields` and `compressS
 | File | What it is |
 |---|---|
 | `MyHumans/Bridge.swift` | The whole contract: names, payloads, injection, encoding |
-| `MyHumans/WebShellViewController.swift` | The `WKWebView`, the message handler, popup + alert handling |
-| `MyHumans/InkCanvasViewController.swift` | `PKCanvasView` + `PKToolPicker`, autosave, PNG export |
-| `MyHumans/Config.swift` | What to load, timings, export limits |
-| `MyHumans/AppDelegate.swift` | Entry point |
+| `MyHumans/WebShellViewController.swift` | The `WKWebView`, the message handler, inline canvas hosting, popup + alert handling |
+| `MyHumans/InkCanvasViewController.swift` | `PKCanvasView` + tools, autosave, PNG export, Pencil gestures |
+| `MyHumans/InkRecovery.swift` | The on-device crash copy of a drawing in progress |
+| `MyHumans/Config.swift` | What to load, timings, export limits, page width |
 | `MyHumans/Resources/harness.html` | The stub take-notes page, for developing without the web repo |
-| *(moved)* | The bridge's TypeScript half lives in `lib/native/` in the `myhumansapp` repo, tests included — it moved at bolt-on (that repo's PR #254) and the `web/` folder here was deleted |
 
+The bridge's TypeScript half lives in `lib/native/` in the `myhumansapp` repo — it moved there
+at bolt-on, tests included, and a copy here would only drift.

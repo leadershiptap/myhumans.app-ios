@@ -101,21 +101,30 @@ Every one of these was learned the hard way, most of them from a bug that reache
 
 Nothing is broken. These are the things a next session would pick up.
 
-1. ~~**Two review angles never ran.**~~ **Done, 14 Aug 2026.** The Swift/geometry and
-   race-condition lenses ran, adversarially verified, and found six real defects — two of them
-   reachable from one ordinary tap on the take-notes screen. All six are fixed, along with the
-   pinch-zoom failure Josh reproduced by hand and the recovery-discard one he reported. The rules
-   they produced are in section 3 above; the remaining known gaps are listed there too. What is
-   still NOT established: `PKDrawing.dataRepresentation()` being byte-stable across a decode and
-   re-encode. The whole reconcile-on-next-open mechanism rests on it, and nothing has proved it.
-2. **Offline mode.** Agreed in principle, deferred deliberately. Josh is offline at a client
+1. **Offline mode.** Agreed in principle, deferred deliberately. Josh is offline at a client
    site once or twice a week. The design conversation is done: cache everything for the ~50
    people he coaches, handwriting images for the last three months, queue writes and replay them
    on reconnect, and show a note that was recovered from offline the first time it is opened.
-   Only ever his iPad, so last-write-wins is a correct rule rather than a compromise.
-3. **Launch screen** is still Apple's default. The app icon is done.
-4. **Nobody else has used it.** A second coach means TestFlight, which the paid account now
+   Only ever his iPad, so last-write-wins is a correct rule rather than a compromise. **This is
+   a `myhumansapp` project, not an iPad one** — the same work covers Josh's laptop.
+2. **Nobody else has used it.** A second coach means TestFlight, which the paid account now
    allows.
+3. **`PKDrawing.dataRepresentation()` is assumed byte-stable across a decode and re-encode, and
+   nothing has established that it is.** The whole reconcile-on-next-open mechanism rests on it:
+   `offerRecoveryIfNeeded()` decides whether to ask by comparing two independently produced
+   serializations of what may be identical strokes. If they can differ, a coach is offered a
+   recovery copy that holds nothing they do not already have. Cheap to settle — encode, decode,
+   re-encode, compare — and nobody has.
+
+### Closed on 14 Aug 2026
+
+- ~~**Two review angles never ran.**~~ The Swift/geometry and race-condition lenses ran,
+  adversarially verified, and found six real defects — two reachable from one ordinary tap on the
+  take-notes screen — plus two Josh reproduced by hand. All fixed (#21, `myhumansapp` #278). The
+  rules they produced are in section 3 above.
+- ~~**Launch screen is still Apple's default.**~~ It is the app's navy with the name and
+  "Ready to take great care of your humans" (#22). One string in
+  `MyHumans/LaunchScreen.storyboard` if that ever stops being the right line.
 
 ---
 

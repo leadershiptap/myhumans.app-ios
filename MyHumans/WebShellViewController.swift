@@ -257,13 +257,13 @@ extension WebShellViewController: InkCanvasViewControllerDelegate {
     }
 
     func inkCanvasDidDiscard(_ controller: InkCanvasViewController, noteId: String?) {
-        emit(.inkDiscard, payload: Bridge.InkDiscard(noteId: noteId))
+        emit(.inkDiscard, payload: Bridge.InkDiscard(session: controller.session, noteId: noteId))
     }
 
     func inkCanvasDidFailLoad(_ controller: InkCanvasViewController, noteId: String?) {
         // Tell the page so it can fall back to its read-only picture, then take the dead
         // canvas away. An older page ignores the unknown name — rule 2.
-        emit(.inkLoadFailed, payload: Bridge.InkLoadFailed(noteId: noteId))
+        emit(.inkLoadFailed, payload: Bridge.InkLoadFailed(session: controller.session, noteId: noteId))
         inkCanvasDidFinish(controller)
     }
 

@@ -233,6 +233,16 @@ extension Bridge {
 
     /// Payload for `ink.autosave` and `ink.close`.
     struct InkResult: Encodable {
+        /// Which OPEN this reply belongs to — the `recoveryKey` the page sent, which is its
+        /// draft key and so identifies the person and meeting being written about.
+        ///
+        /// Load-bearing, not diagnostic. The flush of a closing session crosses the bridge
+        /// asynchronously, and by the time it lands the page may already have navigated to a
+        /// DIFFERENT person's take-notes screen whose canvas is live and listening. Without a
+        /// tag saying whose handwriting this is, that page accepts it and commits one coach's
+        /// note into another person's record.
+        let session: String?
+
         let noteId: String?
 
         /// Base64 `PKDrawing.dataRepresentation()` — the editable source. Opaque to everything
@@ -257,18 +267,20 @@ extension Bridge {
         /// cannot open it.
         let format = "pencilkit"
 
-        static func empty(noteId: String?) -> InkResult {
-            InkResult(noteId: noteId, drawing: "", png: "", isEmpty: true)
+        static func empty(session: String?, noteId: String?) -> InkResult {
+            InkResult(session: session, noteId: noteId, drawing: "", png: "", isEmpty: true)
         }
     }
 
     /// Payload for `ink.discard`.
     struct InkDiscard: Encodable {
+        let session: String?
         let noteId: String?
     }
 
     /// Payload for `ink.loadFailed`.
     struct InkLoadFailed: Encodable {
+        let session: String?
         let noteId: String?
     }
 }

@@ -48,6 +48,9 @@ final class InkCanvasViewController: UIViewController {
     /// Keying by note id alone filed every brand-new note under one shared "unsaved" slot, and
     /// the next blank page ANYONE opened was offered another person's handwriting.
     private var recoveryKey: String? { request.recoveryKey ?? request.noteId }
+
+    /// The tag stamped on every reply, identifying which open this canvas answers for.
+    var session: String? { request.recoveryKey }
     private let canvasView = PKCanvasView()
     private var toolPicker: PKToolPicker?
     private var autosaveTimer: Timer?
@@ -335,7 +338,7 @@ final class InkCanvasViewController: UIViewController {
         guard let recovered = InkRecovery.load(noteId: recoveryKey) else { return }
 
         guard recovered.dataRepresentation() != canvasView.drawing.dataRepresentation() else {
-            InkRecovery.clear(noteId: request.noteId)
+            InkRecovery.clear(noteId: recoveryKey)
             return
         }
 
@@ -535,7 +538,7 @@ final class InkCanvasViewController: UIViewController {
 
         // Written before the message goes out rather than after: if anything downstream of here
         // fails, the strokes are still on disk.
-        InkRecovery.save(drawing, noteId: request.noteId)
+        InkRecovery.save(drawing, noteId: recoveryKey)
 
         delegate?.inkCanvas(self, didProduce: result(for: drawing, png: png), as: .inkAutosave)
     }
@@ -555,7 +558,7 @@ final class InkCanvasViewController: UIViewController {
         else {
             delegate?.inkCanvas(
                 self,
-                didProduce: .empty(noteId: request.noteId),
+                didProduce: .empty(session: request.recoveryKey, noteId: request.noteId),
                 as: .inkClose
             )
             return
@@ -566,6 +569,7 @@ final class InkCanvasViewController: UIViewController {
 
     private func result(for drawing: PKDrawing, png: Data) -> Bridge.InkResult {
         Bridge.InkResult(
+            session: request.recoveryKey,
             noteId: request.noteId,
             drawing: drawing.dataRepresentation().base64EncodedString(),
             png: png.base64EncodedString(),

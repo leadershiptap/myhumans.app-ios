@@ -80,6 +80,13 @@ enum Config {
     /// The eraser and the highlighter are multiples of the chosen pen width, so picking a pen
     /// width sets all three tools at once and switching between them needs no second thought.
     ///
+    /// The eraser width a Pencil squeeze uses before the page has ever sent one.
+    ///
+    /// Only reachable when the coach squeezes without having touched the eraser in the tool row
+    /// first, which is the common case on a fresh note. Matches the page's default slot, and is
+    /// corrected by the page's own message a moment later either way.
+    static let fallbackEraserWidth: CGFloat = 55
+
     /// Tool sizes are no longer computed here.
     ///
     /// They were ratios of the pen (and multipliers before that), and both were wrong for the

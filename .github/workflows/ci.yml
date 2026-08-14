@@ -24,6 +24,16 @@ jobs:
   build:
     name: Build (iOS Simulator)
     runs-on: macos-15
+
+    # A ceiling, not a target — this build takes a few minutes, so 30 is only ever
+    # reached by something stuck. GitHub's default is 360, and macOS minutes bill at
+    # 10x, so ONE hung job on this runner is 3,600 minutes: nearly two months of a
+    # Free plan's 2,000-minute allowance, gone silently while the job looks busy.
+    # That does not bill today because this repository is public and public repos get
+    # unlimited free minutes — which is exactly why the cap belongs here now rather
+    # than in the incident report if it is ever made private again.
+    timeout-minutes: 30
+
     steps:
       - uses: actions/checkout@v4
 

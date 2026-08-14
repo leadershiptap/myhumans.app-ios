@@ -355,6 +355,18 @@ final class InkCanvasViewController: UIViewController {
         return min(max(width, range.lowerBound), range.upperBound)
     }
 
+    /// The widest fixed-width ink that can carry this width, else the one with the range.
+    ///
+    /// Nothing here hard-codes Apple's numbers: it asks each ink what it accepts. That is the
+    /// lesson from two rounds of widths that silently clamped — `validWidthRange` is the only
+    /// thing that knows, and it is cheap to ask.
+    private func highlighterInk(for width: CGFloat) -> PKInkingTool.InkType {
+        if #available(iOS 17.0, *) {
+            if PKInkingTool.InkType.monoline.validWidthRange.contains(width) { return .monoline }
+        }
+        return .marker
+    }
+
     /// What the page's own tool row picked.
     func apply(tool: Bridge.InkTool) {
         currentTool = tool
@@ -372,30 +384,28 @@ final class InkCanvasViewController: UIViewController {
             }
 
         case "marker":
-            // A highlighter is yellow and see-through, and wider than the words it marks —
+            // A highlighter is yellow, see-through, and WIDER than the words it marks —
             // otherwise it is just a second pen. The colour is the tool's, not the palette's:
             // picking "red highlighter" is not a thing anyone means.
-            // `.monoline`, not `.marker`. A real marker responds to how the Pencil is HELD —
-            // edge-on lays a wider band than point-on, which is exactly how a felt tip behaves
-            // and exactly what Josh does not want. Monoline is a constant-width ink, so the
-            // highlighter is now the width the toolbar says and nothing else, and the
-            // translucent yellow does the rest of the work.
+            //
+            // Which ink carries it is decided at runtime rather than assumed, because assuming
+            // is what went wrong twice. `.monoline` is the ideal — a constant width, so the
+            // stroke ignores both pressure and how the Pencil is HELD, and a marker's
+            // edge-on-versus-point-on behaviour is exactly what Josh did not want. But its
+            // valid width range turned out to be too narrow for a highlighter: every slot
+            // clamped onto the same ceiling, so all four came out identical and thin.
+            //
+            // So: monoline while it can actually carry the width, and the marker, which has the
+            // range, once it cannot. Tilt response is the price of a highlighter you can see,
+            // and only at the widths where there is no alternative.
             let highlighterWidth = width * Config.highlighterWidthMultiplier
             let highlighterColour = UIColor(hex: "#FDE047")
                 .withAlphaComponent(Config.highlighterAlpha)
-            if #available(iOS 17.0, *) {
-                canvasView.tool = PKInkingTool(
-                    .monoline,
-                    color: highlighterColour,
-                    width: clamped(highlighterWidth, for: .monoline)
-                )
-            } else {
-                canvasView.tool = PKInkingTool(
-                    .marker,
-                    color: highlighterColour,
-                    width: clamped(highlighterWidth, for: .marker)
-                )
-            }
+            canvasView.tool = PKInkingTool(
+                highlighterInk(for: highlighterWidth),
+                color: highlighterColour,
+                width: clamped(highlighterWidth, for: highlighterInk(for: highlighterWidth))
+            )
 
         default:
             // Constant width, no pressure response. Josh: whatever the tool says is what should

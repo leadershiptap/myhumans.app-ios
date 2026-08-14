@@ -93,7 +93,11 @@ enum Config {
     /// width slot per tool and never translate between them: at the same slot, each tool is
     /// already the size that goes with the others.
     static let eraserWidthMultiplier: CGFloat = 5
-    static let highlighterWidthMultiplier: CGFloat = 2.5
+    /// Wider than the 2.5 first tried. At that ratio the finest slot asked for 2.5pt, which is
+    /// a thin line rather than a highlight — and `.monoline`'s own ceiling is low enough that
+    /// every slot clamped onto it, so all four came out identical AND tiny. See the ink
+    /// selection in `apply(tool:)`, which now picks an ink that can actually carry the width.
+    static let highlighterWidthMultiplier: CGFloat = 8
 
     /// Highlighter colour and opacity — a marker laid over words has to leave them readable.
     static let highlighterAlpha: CGFloat = 0.25

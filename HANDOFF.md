@@ -1,11 +1,11 @@
-# Handoff — picking this up on a Mac
+# Handoff — where this stands
 
-You are taking over the MyHumans.App iPad shell. Everything in this repo was written on a Linux
-machine with no Xcode, so **the code compiles but has never run.** Your job is the part that
-needs real hardware.
+You are taking over the MyHumans.App iPad shell. This file is what to read first; `README.md` is
+what it is and how the bridge works, and `MAINTAINING.md` answers "which repo do I change?".
 
-Read `README.md` for what this is and `web/BOLT-ON.md` for how it eventually joins the web app.
-This file is what to do first.
+The original version of this file was written before any of it had run. That is no longer the
+situation, so it has been rewritten rather than annotated: everything below describes what is
+built, shipped and in daily use.
 
 ---
 
@@ -13,195 +13,119 @@ This file is what to do first.
 
 | | |
 |---|---|
-| Compiles | **Yes** — GitHub's macOS 15 / Xcode 16 runners every push, and locally on Xcode 26.6 |
-| Bridge logic tested | **Yes** — 21 Vitest tests in `web/`, green in CI |
-| Ever run on a device | **Yes** — 13 Aug 2026, iPad Air (`iPad15,3`) |
-| Ever run in the simulator | **Yes** — iPad Pro 11-inch, bridge injection confirmed |
-| Apple Pencil verified | **Yes** — see §3c below |
-| Sign-in / auth verified | **Yes** — including Microsoft, see §3a below |
-| Signed / installable | **Yes** — free personal team `W6Q5F68ZAQ`, 7-day profile |
-| Touches the `myhumansapp` repo | **No, and must not yet** — see §6 |
+| Compiles | **Yes** — CI on every push (public repo, so unlimited minutes) and locally on Xcode 26.6 |
+| Runs on a device | **Yes** — iPad Air 11-inch (M3), iPadOS 26.5 |
+| Signed / installable | **Yes** — paid Individual team `W6Q5F68ZAQ`, profile good for a year |
+| Apple Pencil | **Yes** — Pencil Pro, in real coaching notes |
+| Sign-in | **Yes** — email/password AND Microsoft, both inside the web view |
+| The bolt-on | **Landed** — `myhumansapp` #254, #258, and everything after |
+| Live for real work | **Yes** — Josh writes real notes on it |
 
-Treat anything about *behaviour* below as a prediction unless §3 marks it verified. Anything about
-*structure* is verified.
-
-### Verified on device, 13 Aug 2026
-
-§3c passed in full on an iPad Air with an **Apple Pencil Pro**. Palm rejection is a non-event —
-resting a hand on the glass while writing produced no stray marks and no dropped strokes. Reopen
-returns strokes still editable, not a flattened picture. Undo/redo, the tool picker, finger
-scrolling while holding the Pencil, Clear, and Done-on-blank all behaved. Reported as
-indistinguishable from Apple Notes.
-
-**That answers open question 1 in §8: the Pencil premise holds.** The WebKit limitation quoted in
-`README.md` is gone by construction, as predicted.
-
-**§3a passed too, and the Microsoft risk did not materialise.** Email-and-password sign-in
-completed inside the web view; the session survived a force-quit and relaunch, so cookies on
-`WKWebsiteDataStore.default()` persist as designed; and **reconnecting a calendar over Microsoft
-OAuth succeeded inside the web view.** The contingency in §3a — routing the OAuth hop through
-`ASWebAuthenticationSession` — is therefore **not needed**. Leave it unbuilt. Nothing was
-disabled, spoofed, or worked around to get this; the user agent is still untouched per §5.
-
-§3b (whole-app smoke — driving every screen looking for layout breakage) is still untested, and is
-now the next thing on a device.
+The one thing that has never been done: nobody but Josh has used it. There is no TestFlight, no
+second device, no other coach.
 
 ---
 
-## 2. Get it running (first 30 minutes)
+## 2. What it actually is now
 
-```bash
-git clone https://github.com/leadershiptap/myhumans.app-ios
-cd myhumans.app-ios
-open MyHumans.xcodeproj
-```
+A `WKWebView` pointed at `myhumans.app`, plus **one native screen** — a PencilKit canvas that
+embeds INSIDE the take-notes page at a rectangle the page measures and reports.
 
-1. Target **MyHumans** → **Signing & Capabilities** → set **Team** to Josh's Apple ID.
-   A free Apple ID is enough. If the bundle id `com.leadershiptap.myhumans` is taken, change it —
-   nothing depends on it.
-2. Plug in the iPad, pick it as the destination, Run.
-3. On the iPad: **Settings → General → VPN & Device Management** → trust the developer cert.
+That inline design is the whole shape of the thing, and it was arrived at by use:
 
-A free Apple ID install stops working after 7 days; plug in and re-run. That is expected and is
-why no paid account has been bought yet.
+- Fullscreen-only writing meant losing the person's details at the exact moment they were being
+  written about, so the canvas moved into the page.
+- Fullscreen now just grows the same rectangle. Same paper, two sizes, no modal and no "Done".
+- The page renders the chrome — the tool row, undo/redo/delete — because a native canvas cannot
+  be styled to match the app around it, and Apple's tool palette cannot be sized at all.
 
-**`Config.startTarget` decides what loads.** It ships as `.harness`.
+**Bridge v2**, capability `ink-inline`. A v1 shell or a v1 web app still gets the original
+full-screen modal flow; both sides degrade rather than break. See `README.md` for the messages.
 
 ---
 
-## 3. What only a device can answer
+## 3. The rules that cost something when broken
 
-Work these in order. The first is the one that could change the whole plan.
+Every one of these was learned the hard way, most of them from a bug that reached the device.
 
-### 3a. Auth — the go/no-go
-
-Set `Config.startTarget = .liveApp`, run, and answer:
-
-- Does sign-in complete inside the web view? Clerk is configured for **email + password OR
-  Office 365**. Email and password should be fine. **Microsoft may refuse to authenticate inside
-  an embedded web view** — that is the known risk.
-- Force-quit the app, reopen. Are you still signed in? (Cookies are on
-  `WKWebsiteDataStore.default()`, so they should persist. Verify it.)
-- Settings → connect a calendar. The Microsoft OAuth redirect is the same exposure.
-
-**If Microsoft refuses:** do not fight it. Two acceptable answers, in order —
-(1) sign in with email and password on the iPad, which already works and costs nothing;
-(2) route only the OAuth hop through `ASWebAuthenticationSession`. Do not disable web security,
-do not spoof a Safari user agent to get around it, and do not replace the user agent at all
-(see §5).
-
-### 3b. Whole-app smoke, still on `.liveApp`
-
-Drive every screen. Dashboard, people, a profile, interactions, tasks, follow-ups, the resource
-library, settings. You are looking for anything the web view breaks that a browser does not:
-fixed positioning, the `h-dvh` layout, safe areas, the sidebar, dialogs, file pickers, mailto
-links. Log what you find; most of it will be small.
-
-### 3c. The Pencil — the whole reason this exists
-
-Set `Config.startTarget = .harness`, run, and use the buttons on the page.
-
-- **Palm rejection.** Rest your hand on the glass and write. This is the failure the web canvas
-  could never fix, so it is the acceptance test. `drawingPolicy = .pencilOnly` should make it a
-  non-event.
-- **Latency and feel** against the web canvas at `myhumans.app` on the same iPad. If it does not
-  feel obviously better, say so plainly — the entire project rests on it.
-- **Scrolling** with fingers while the Pencil is in hand. The page grows as you approach the
-  bottom (`growContentIfNeeded`); check it does not fight you.
-- **The tool picker.** Does it land somewhere sensible, and can it be moved?
-- **Undo / Redo** in the nav bar. These were wired to the wrong undo manager once already.
-- **Reopen.** Write, tap Done, tap "Reopen last drawing". The strokes must come back editable.
-  This is the round trip the whole design depends on.
-- **The returned picture.** The harness shows it. Check it is not transparent, not cropped, and
-  a sane size — it logs kilobytes for both the drawing and the picture.
-- **Clear** → confirms → `ink.discard` in the log.
-- **Done on a blank page** → `ink.close` with `EMPTY` in the log, deliberately.
-
-Watch the log panel throughout. Every bridge message prints there.
+- **Nothing expensive runs while the pen is down.** An autosave that rasterised the page from
+  inside the drawing callback dropped strokes — the stall starves PencilKit's touch delivery and
+  iOS cancels the live stroke. Timers only, and the picture is rendered rarely.
+- **Ask an ink what width it accepts.** Every `PKInkingTool.InkType` has a `validWidthRange` and
+  silently pins anything past it. Two rounds of tool sizes looked broken because of this — four
+  slots collapsing onto one width, with no error anywhere.
+- **Sizes live in the page**, one table per tool, and are not multiples of each other. The shell
+  applies what it is told and clamps; it must never compute a width for a tool it was not given
+  one for. A Pencil squeeze doing exactly that produced a 1.5pt eraser.
+- **Every message carries a `session` tag** — the page's draft key. A flush crosses the bridge
+  asynchronously, and an in-app navigation can mount the NEXT person's canvas before it lands.
+  Delivering by recency put one coach's handwriting into another person's record.
+- **The recovery copy is keyed by that same draft key**, never by note id. A brand-new note has
+  no id until the page's first commit, so keying by id filed every new note under one shared
+  slot and offered it to whoever opened a blank page next.
+- **The draft is written BEFORE the commit**, every time. `commit()` returns early when offline,
+  and until that message arrives the drawing lives in the native canvas and nowhere else.
+- **A drawing that fails to decode disables saving and tells the page.** An empty page that
+  saves overwrites real handwriting with nothing.
+- **The web app must work with no shell**, and the shell must tolerate any web version. An
+  unrecognised message is ignored, never thrown.
+- **Never replace the user agent; only append.** tldraw's iOS guards key off a bare
+  `/iPad|iPhone/` match, and nothing on either side may branch on the UA.
 
 ---
 
-## 4. Then: the things worth building next
+## 4. Open loops
 
-Only after §3, and only what the device actually showed you a need for.
+Nothing is broken. These are the things a next session would pick up.
 
-1. Fix whatever §3 surfaced. Expect layout and sizing, not architecture.
-2. **A page-length model that matches how coaches write.** Right now the page grows by a screen
-   at a time. Real use may want fixed pages, or a much taller one.
-3. **Backgrounding.** If iOS kills the app mid-note, the drawing lives in the native canvas and
-   nowhere else until an autosave crosses the bridge. Consider persisting the `PKDrawing` to
-   disk on `sceneDidEnterBackground` and restoring it. This matters more once it is on the live
-   app, where a lost note is a real note.
-4. **A launch screen and an app icon.** Both are placeholders.
-5. Only then, the bolt-on in `web/BOLT-ON.md` — and **not before the Postgres migration in the
-   `myhumansapp` repo has cut over.**
-
----
-
-## 5. Rules — do not undo these
-
-Each is either load-bearing or was already fixed once.
-
-- **Never replace the user agent; only append to it** (`applicationNameForUserAgent` in
-  `Config.swift`). tldraw's own iOS guards key off a bare `/iPad|iPhone/` user-agent match that
-  iPadOS Safari already fails, so changing the UA changes which of its internal guards fire. The
-  web app feature-detects the shell through the injected object, never the UA.
-- **The bridge is four messages, and unknown ones are ignored rather than thrown.** The web app
-  must keep working with no shell present, and this shell must tolerate a newer web app. If you
-  need a fifth message, that is fine — but bump `Bridge.version` and add a capability string, do
-  not assume both sides ship together.
-- **A drawing that fails to decode disables saving and sends nothing.** It renders as an empty
-  page, and an empty page that saves overwrites real handwriting with nothing.
-- **An empty page never sends content**, but `ink.close` still fires carrying `isEmpty` so the
-  web page learns the screen closed. Erasing everything is not a request for a blank note;
-  deleting is what Clear is for.
-- **The exported PNG has the page colour composited in.** PencilKit returns a transparent image;
-  the web canvas exports with a background, and every surface in the app renders that picture.
-- **A very long page steps the export scale down rather than cropping.** Cropping silently loses
-  handwriting, and `/api/upload-image` refuses anything over 15MB.
-- **This app never fetches an ink image.** Every ink URL is a cookie-authenticated same-origin
-  request; staying out of that path is what keeps this shell from needing its own copy of the
-  app's auth.
-- **The native canvas never talks to the database or Cloudinary.** Drawing in, drawing and
-  picture out. All persistence belongs to the web app.
+1. **Two review angles never ran.** The adversarial review of the inline canvas lost its
+   Swift/geometry and race-condition lenses to a usage limit mid-run. Everything they would have
+   covered is live and working, but unreviewed — and every round that *did* run found something
+   real. This is the highest-value thing left.
+2. **Offline mode.** Agreed in principle, deferred deliberately. Josh is offline at a client
+   site once or twice a week. The design conversation is done: cache everything for the ~50
+   people he coaches, handwriting images for the last three months, queue writes and replay them
+   on reconnect, and show a note that was recovered from offline the first time it is opened.
+   Only ever his iPad, so last-write-wins is a correct rule rather than a compromise.
+3. **Launch screen** is still Apple's default. The app icon is done.
+4. **Nobody else has used it.** A second coach means TestFlight, which the paid account now
+   allows.
 
 ---
 
-## 6. Do not do these
+## 5. Do not do these
 
-- **Do not change anything in the `myhumansapp` repo.** It is frozen for an Airtable → Postgres
-  migration and this work is deliberately separate until that has cut over. `web/` in this repo
-  is where the eventual web-side code lives in the meantime.
-- **Do not add app features to the shell.** Every screen belongs to the web app so it stays
-  shared with desktop and Android. If you find yourself writing a settings screen or a people
-  list in Swift, stop.
-- **Do not upgrade or touch tldraw** in the other repo. It is pinned to an exact version because
+- **Do not put app features in the shell.** Every screen belongs to the web app so it stays
+  shared with desktop and Android. If you find yourself writing a settings screen in Swift, stop.
+  The canvas-settings menu that briefly existed here was removed for exactly this reason.
+- **Do not upgrade or touch tldraw** in the other repo. Pinned to an exact version because
   upgrading is a one-way door for saved handwriting.
-- ~~**Do not buy the $99 Apple Developer account yet.**~~ Overtaken by events — Josh bought it on
-  13 Aug 2026. It is **not yet reaching Xcode**: the profile issued on that date is a free personal
-  team (`W6Q5F68ZAQ`, "Joshua Hartsell", 7-day expiry), so the 7-day reinstall still applies. Likely
-  an unsigned agreement at developer.apple.com or a membership still processing. Not blocking §3.
+- **Do not copy anything from `myhumansapp` into this repo.** This one is PUBLIC. It holds no
+  secrets, no customer data and no server code, and it needs to stay that way.
+- **Do not restore handwriting to the browser.** The tldraw canvas still works there, and that
+  is the problem: it works badly enough that a coach who lands on it writes a glitchy note and
+  cannot tell why.
 
 ---
 
-## 7. Working agreements
+## 6. Working agreements
 
-- Branch and PR for anything non-trivial; CI runs the simulator build and the bridge tests on
-  every push and pull request.
+- Branch and PR for anything non-trivial, in both repos. CI gates both.
 - Josh is not a coder. Keep chat replies short and jargon-free, and end with a numbered table of
-  anything you need from him. The `myhumansapp` repo's `CLAUDE.md` has the full house style —
-  worth reading even though you are not working in that repo.
+  anything you need from him. The `myhumansapp` repo's `CLAUDE.md` has the full house style.
+- **Check what a checkout is pointed at before quoting it.** A stale local checkout of
+  `myhumansapp` — 120 commits behind, on a branch whose remote was deleted — produced a
+  confident, wrong "correction" that survived review in two repositories.
 - Behaviour on a device cannot be verified any other way. Do not report something as working
   because it compiles.
 
 ---
 
-## 8. Open questions for Josh
+## 7. Answered, so nobody re-opens them
 
-Ask these when they come up, not up front:
-
-1. Does the Pencil actually feel better than the web canvas? If not, the project's premise is
-   wrong and it is better to know in week one.
-2. Is a full-screen writing page right, or is losing the person's details beside it a problem in
-   a real session?
-3. How long should a note's page be before it becomes a second page?
+- **Does the Pencil beat the web canvas?** Yes, decisively. Palm rejection is a non-event;
+  reported as indistinguishable from Apple Notes.
+- **Is a full-screen writing page right?** No — and that is why the canvas is inline, with
+  fullscreen as a size rather than a mode.
+- **Is the $99 account needed?** It is bought and active. Certificates last a year instead of
+  seven days.

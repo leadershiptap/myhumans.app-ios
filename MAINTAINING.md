@@ -24,7 +24,8 @@ it means the iPad app almost never needs rebuilding.
 |---|---|---|
 | Anything you can see and click in the app | `myhumansapp` | **No** |
 | Any data, any save, any permission | `myhumansapp` | **No** |
-| How the Apple Pencil canvas behaves | `myhumans.app-ios` | Yes |
+| The writing toolbar — tips, colours, sizes, undo, delete | `myhumansapp` | **No** |
+| How the Pencil canvas itself behaves — strokes, scrolling, gestures | `myhumans.app-ios` | Yes |
 | The app's icon or name on the home screen | `myhumans.app-ios` | Yes |
 | Adding a *new* conversation between the website and the Pencil canvas | **Both** | Yes |
 
@@ -47,7 +48,16 @@ live in the app the moment the page reloads.
 This is the case for nearly everything: new screens, new fields, renamed buttons, colour changes,
 bug fixes, new features, permissions, reports.
 
-### 2. "The tool palette on the writing screen is in an annoying place"
+### 2. "The pen sizes are wrong"
+
+**Where:** `myhumansapp` only. No rebuild.
+
+This is the one that surprises people. The writing toolbar — the tips, the colours, the four
+sizes, undo, redo, delete — is drawn by the WEBSITE, sitting directly above the canvas. Only the
+canvas itself is native. So changing what the buttons offer is a web change and reaches your iPad
+on deploy.
+
+### 3. "Scrolling while writing feels wrong"
 
 **Where:** `myhumans.app-ios` only.
 
@@ -60,11 +70,11 @@ reinstalls. A couple of minutes.
 Also in this bucket: page length, undo behaviour, the pen-only setting, the confirmation wording,
 crash recovery.
 
-### 3. "I want the app icon changed"
+### 4. "I want the app icon changed"
 
 **Where:** `myhumans.app-ios` only. Rebuild and reinstall.
 
-### 4. "The writing screen should also know which person the note is about"
+### 5. "The writing screen should also know which person the note is about"
 
 **Where:** **both.** This is the one case that needs coordinating.
 
@@ -77,7 +87,7 @@ older or newer. A website that sends a message the app doesn't know is ignored, 
 app expecting something the website doesn't send yet carries on. So you can ship one side today
 and the other next week, and nothing breaks in between.
 
-### 5. "Something looks wrong, but only in the iPad app"
+### 6. "Something looks wrong, but only in the iPad app"
 
 **Where:** usually `myhumansapp`. Occasionally the shell.
 
@@ -122,11 +132,12 @@ accessory.**
 
 The app is installed with a developer certificate, and certificates expire.
 
-- **Free Apple ID:** expires every **7 days**. Plug in, rebuild, carry on.
+- **Free Apple ID:** expires every **7 days**.
 - **Paid account ($99/year):** expires every **year**.
 
-Josh has paid, so this should be annual. If it's still asking weekly, the paid membership hasn't
-reached Xcode — see the note in `HANDOFF.md` §6.
+Josh's account is paid and active, so this is annual. The current certificate runs to **13 August
+2027**. When it lapses the app stops opening until it is rebuilt and reinstalled — nothing is
+lost, because no data lives on the iPad.
 
 Nothing is lost when it expires. The app stops opening until it's reinstalled; no data is on the
 iPad to lose, because all of it lives in the web app.
